@@ -322,6 +322,13 @@ async function execRotation(marketId){
 function rd_tab4(){
  let e=document.getElementById('p6');
  if(!e)return;
+ // Clear any existing observer to avoid duplicates
+ if(window._dashObs)try{window._dashObs.disconnect()}catch(ex){}
+ window._dashObs=new MutationObserver(function(){
+  if(e.classList.contains('on')){loadDashboard();}
+ });
+ window._dashObs.observe(e,{attributes:true,attributeFilter:['class']});
+ if(!e){console.log('p6 not found');return;}
  e.innerHTML=
   '<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:12px;margin-bottom:16px" id="dashCards"></div>'+
   '<div class="cd" id="dashLogSection">'+
@@ -398,7 +405,7 @@ async function loadDashboard(){
     '<div><div style="font-size:22px;font-weight:700;color:var(--gcl)">'+v.total+'</div><div style="font-size:11px;color:var(--dim)">執行次數</div></div>'+
     '<div><div style="font-size:22px;font-weight:700;color:'+(v.triggered>0?'var(--red)':'var(--dim)')+'">'+v.triggered+'</div><div style="font-size:11px;color:var(--dim)">觸發</div></div>'+
     '</div>'+
-    '<div style="font-size:11px;color:var(--dim)">最近: '+(v.last?v.last.slice(11,19):'--')+'</div>'+
+    '<div style="font-size:11px;color:var(--dim)">最近: '+(v.last?hktStr(v.last).time+' '+hktStr(v.last).date:'--')+'</div>'+
     '</div>'
    ).join('');
   }
