@@ -6,4 +6,3 @@ node_modules/
 *.log
 /tmp/
 .env
-backtest/
