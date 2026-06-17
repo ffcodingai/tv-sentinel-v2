@@ -61,7 +61,8 @@ function httpGet(url, timeout = 5000) {
 }
 
 // ── 拉取版塊折溢價數據 ──
-async function fetchRotationData() {
+async function fetchRotationData(btId) {
+  if (btId) return dataProvider ? dataProvider.getRotationData(atStr, btId) : null;
   try {
     const raw = fs.readFileSync(ROTATION_UI_PATH, 'utf8');
     return JSON.parse(raw);
@@ -76,7 +77,8 @@ async function fetchRotationData() {
 }
 
 // ── 拉取商品放量數據 ──
-async function fetchVolumeSurge() {
+async function fetchVolumeSurge(btId) {
+  if (btId) return dataProvider ? dataProvider.getVolumeSurge(atStr, btId) : null;
   try {
     const raw = fs.readFileSync(VOLUME_SURGE_PATH, 'utf8');
     return JSON.parse(raw);
@@ -84,7 +86,8 @@ async function fetchVolumeSurge() {
 }
 
 // ── 拉取 composite index 方向 ──
-async function fetchIndexData() {
+async function fetchIndexData(btId) {
+  if (btId) return dataProvider ? dataProvider.getIndexData(atStr, btId) : null;
   try {
     const data = await httpGet(`${INDEX_SERVER}/api/data`, 3000);
     return data;
@@ -134,7 +137,26 @@ function analyzeSectors(rotData, markets) {
 }
 
 // ── 檢查阻力測試（個股層面）──
-async function checkResistanceTests(markets) {
+async function checkResistanceTests(markets, btId, targetDate) {
+  if (btId) {
+    const resistData = dataProvider ? dataProvider.getResistanceData(targetDate, btId) : null;
+    if (!resistData) return { nearResistance: [], broken: [], totalTests: 0 };
+    const results = { nearResistance: [], broken: [], totalTests: 0 };
+    for (const [market, md] of Object.entries(resistData.data?.markets || {})) {
+      for (const s of md.stocks || []) {
+        const pct = parseFloat(s.pctToResistance);
+        if (pct > 0 && pct < 5) {
+          results.nearResistance.push({ symbol: s.tvSymbol, name: s.name, pct });
+          results.totalTests++;
+        }
+        if ((s.status || '').toLowerCase().includes('danger') || (s.status || '').includes('close')) {
+          results.broken.push({ symbol: s.tvSymbol, name: s.name, status: s.status });
+          results.totalTests++;
+        }
+      }
+    }
+    return results;
+  }
   const results = { nearResistance: [], broken: [], totalTests: 0 };
   for (const market of ['america', 'china', 'hongkong', 'japan', 'korea', 'taiwan', 'uk', 'france', 'germany']) {
     if (!markets.includes(market.slice(0,2).toUpperCase())) continue;
@@ -161,7 +183,9 @@ async function checkResistanceTests(markets) {
 // ── Main ──
 async function main(options = {}) {
   const atStr = options.at || null;
+  const backtestId = options.backtestId || null;
   const jsonMode = options.json || false;
+  const dataProvider = backtestId ? require('./backtest/data-provider') : null;
   const log = jsonMode ? () => {} : console.log;
 
   const result = {
@@ -187,7 +211,7 @@ async function main(options = {}) {
   }
 
   // Step 3: 商品放量檢查
-  const rotData = await fetchRotationData();
+  const rotData = await fetchRotationData(backtestId);
   if (!rotData) {
     result.steps.push({ step: 3, name: '商品放量+折溢價', status: 'fail', detail: '無法取得數據' });
     result.ltTriggered = false; result.ltReason = '數據不可用';
@@ -204,14 +228,15 @@ async function main(options = {}) {
       : `⚠️ 非一致上漲 (看多${analysis.totalUp}/看空${analysis.totalDown}/分歧${analysis.totalMixed})` });
 
   // Step 5: 阻力測試
-  const resist = await checkResistanceTests(markets);
+  const dateStr = atStr ? atStr.split(' ')[0] : '';
+  const resist = await checkResistanceTests(markets, backtestId, dateStr);
   result.steps.push({ step: 5, name: '阻力測試', status: resist.totalTests > 5 ? 'warn' : 'pass',
     detail: resist.totalTests > 0
       ? `${resist.nearResistance.length}支接近阻力, ${resist.broken.length}支已觸及`
       : '無明顯阻力測試' });
 
   // Step 6: 斜率方向
-  const indexData = await fetchIndexData();
+  const indexData = await fetchIndexData(backtestId);
   const slope = calcSlope(indexData);
   const slopeDown = slope !== null && slope < -0.1;
   result.steps.push({ step: 6, name: '斜率方向', status: slopeDown ? 'warn' : 'pass',
@@ -260,7 +285,10 @@ if (require.main === module) {
   const args = process.argv.slice(2);
   const atIndex = args.indexOf('--at');
   const atStr = atIndex >= 0 ? args[atIndex + 1] : null;
-  main({ at: atStr, json: args.includes('--json') }).then(r => {
+  const btIndex = args.indexOf('--backtest-id');
+  const btId = btIndex >= 0 ? args[btIndex + 1] : null;
+
+  main({ at: atStr, json: args.includes('--json'), backtestId: btId }).then(r => {
     if (args.includes('--json')) console.log(JSON.stringify(r));
   }).catch(e => console.error(e.message));
 }

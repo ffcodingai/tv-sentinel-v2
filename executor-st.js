@@ -60,7 +60,8 @@ function httpGet(url, timeout = 5000) {
   });
 }
 
-async function fetchRotationData() {
+async function fetchRotationData(btId) {
+  if (btId) return dataProvider ? dataProvider.getRotationData(atStr, btId) : null;
   try {
     const raw = fs.readFileSync(ROTATION_UI_PATH, 'utf8');
     return JSON.parse(raw);
@@ -73,7 +74,8 @@ async function fetchRotationData() {
   }
 }
 
-async function fetchIndexData() {
+async function fetchIndexData(btId) {
+  if (btId) return dataProvider ? dataProvider.getIndexData(atStr, btId) : null;
   try {
     return await httpGet(`${INDEX_SERVER}/api/data`, 3000);
   } catch { return null; }
@@ -121,7 +123,26 @@ function analyzeSectors(rotData, markets) {
 }
 
 // ── 檢查支撐測試 ──
-async function checkSupportTests(markets) {
+async function checkSupportTests(markets, btId, targetDate) {
+  if (btId) {
+    const resistData = dataProvider ? dataProvider.getResistanceData(targetDate, btId) : null;
+    if (!resistData) return { nearSupport: [], broken: [], totalTests: 0 };
+    const results = { nearSupport: [], broken: [], totalTests: 0 };
+    for (const [market, md] of Object.entries(resistData.data?.markets || {})) {
+      for (const s of md.stocks || []) {
+        const pct = parseFloat(s.pctToSupport);
+        if (pct > 0 && pct < 5) {
+          results.nearSupport.push({ symbol: s.tvSymbol, name: s.name, pct });
+          results.totalTests++;
+        }
+        if ((s.status || '').toLowerCase().includes('danger') || (s.status || '').toLowerCase().includes('support_broken') || (s.status || '').includes('close')) {
+          results.broken.push({ symbol: s.tvSymbol, name: s.name, status: s.status });
+          results.totalTests++;
+        }
+      }
+    }
+    return results;
+  }
   const results = { nearSupport: [], broken: [], totalTests: 0 };
   for (const market of ['america', 'china', 'hongkong', 'japan', 'korea', 'taiwan', 'uk', 'france', 'germany']) {
     if (!markets.includes(market.slice(0,2).toUpperCase())) continue;
@@ -172,7 +193,7 @@ async function main(options = {}) {
     return result;
   }
 
-  const rotData = await fetchRotationData();
+  const rotData = await fetchRotationData(backtestId);
   if (!rotData) {
     result.steps.push({ step: 3, name: '數據獲取', status: 'fail', detail: '無法取得版塊數據' });
     result.stTriggered = false; result.stReason = '數據不可用';
@@ -189,14 +210,15 @@ async function main(options = {}) {
       : `⚠️ 非一致下跌 (看多${analysis.totalUp}/看空${analysis.totalDown}/分歧${analysis.totalMixed})` });
 
   // Step 5: 支撐測試
-  const support = await checkSupportTests(markets);
+  const dateStr = atStr ? atStr.split(' ')[0] : '';
+  const support = await checkSupportTests(markets, backtestId, dateStr);
   result.steps.push({ step: 5, name: '支撐測試', status: support.totalTests > 5 ? 'warn' : 'pass',
     detail: support.totalTests > 0
       ? `${support.nearSupport.length}支接近支撐, ${support.broken.length}支已跌破`
       : '無明顯支撐測試' });
 
   // Step 6: 斜率方向
-  const indexData = await fetchIndexData();
+  const indexData = await fetchIndexData(backtestId);
   const slope = calcSlope(indexData);
   const slopeUp = slope !== null && slope > 0.1;
   result.steps.push({ step: 6, name: '斜率方向', status: slopeUp ? 'warn' : 'pass',
@@ -245,7 +267,10 @@ if (require.main === module) {
   const args = process.argv.slice(2);
   const atIndex = args.indexOf('--at');
   const atStr = atIndex >= 0 ? args[atIndex + 1] : null;
-  main({ at: atStr, json: args.includes('--json') }).then(r => {
+  const btIndex = args.indexOf('--backtest-id');
+  const btId = btIndex >= 0 ? args[btIndex + 1] : null;
+
+  main({ at: atStr, json: args.includes('--json'), backtestId: btId }).then(r => {
     if (args.includes('--json')) console.log(JSON.stringify(r));
   }).catch(e => console.error(e.message));
 }

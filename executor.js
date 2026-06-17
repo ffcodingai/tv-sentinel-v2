@@ -137,7 +137,8 @@ function httpGet(url, timeout = 5000) {
 }
 
 // ── Fetch Volume Surge Data ──
-async function fetchVolumeSurge() {
+async function fetchVolumeSurge(btId) {
+  if (btId) return dataProvider ? dataProvider.getVolumeSurge(atStr, btId) : null;
   try {
     if (require('fs').existsSync(VOLUME_SURGE_PATH)) {
       const raw = require('fs').readFileSync(VOLUME_SURGE_PATH, 'utf-8');
@@ -191,7 +192,32 @@ function checkVolumeSurge(volData) {
 }
 
 // ── Fetch tv-index Direction ──
-async function fetchIndexDirection() {
+async function fetchIndexDirection(btId) {
+  if (btId) {
+    try {
+      const idxData = dataProvider ? dataProvider.getIndexData(atStr, btId) : null;
+      if (!idxData) return { available: false, direction: null, message: '回測無 index 數據' };
+      const composite = idxData.composite || [];
+      if (Array.isArray(composite) && composite.length >= 3) {
+        const len = composite.length;
+        const last = composite[len-1]?.value;
+        const prev = composite[len-3]?.value;
+        if (last != null && prev != null) {
+          const dir = last >= prev ? 'up' : 'down';
+          return {
+            available: true,
+            direction: dir,
+            lastValue: last,
+            prevValue: prev,
+            message: `📊 tv-index 方向: ${dir === 'up' ? '📈上漲' : '📉下跌'} (${prev}→${last})`
+          };
+        }
+      }
+      return { available: true, direction: null, message: 'tv-index 數據不足判斷方向' };
+    } catch {
+      return { available: false, direction: null, message: '回測 index 錯誤' };
+    }
+  }
   try {
     const data = await httpGet(`${INDEX_SERVER}/api/data`, 3000);
     if (!data) return { available: false, direction: null, message: 'tv-index 無回應' };
@@ -220,7 +246,8 @@ async function fetchIndexDirection() {
 }
 
 // ── Fetch Rotation Data ──
-async function fetchRotationData() {
+async function fetchRotationData(btId) {
+  if (btId) return dataProvider ? dataProvider.getRotationData(atStr, btId) : null;
   // Try local file first
   const fs = require('fs');
   try {
@@ -434,7 +461,9 @@ function analyzeAllMarkets(rotData) {
 // ── Main entry ──
 async function main(options = {}) {
   const atStr = options.at || null;
+  const backtestId = options.backtestId || null;
   const jsonMode = options.json || false;
+  const dataProvider = backtestId ? require('./backtest/data-provider') : null;
   const log = jsonMode ? () => {} : console.log;
 
   const result = {
@@ -465,7 +494,7 @@ async function main(options = {}) {
 
   // ── Fetch data ──
   // Step 3: 商品放量檢查
-  const volData = await fetchVolumeSurge();
+  const volData = await fetchVolumeSurge(backtestId);
   const volResult = checkVolumeSurge(volData);
   result.steps.push({ step: 3, name: '商品放量(金銀/油/BTC/ETH/匯率)', status: volResult.hasSurge ? 'pass' : 'fail',
     detail: volResult.message, volumeSurge: volResult });
@@ -478,7 +507,7 @@ async function main(options = {}) {
 
   log(volResult.message);
 
-  const rotData = await fetchRotationData();
+  const rotData = await fetchRotationData(backtestId);
   if (!rotData?.countries) {
     result.steps[2].status = 'fail';
     result.steps[2].detail = '無法取得折溢價數據 (8288)';
@@ -538,11 +567,16 @@ async function main(options = {}) {
     detail: subSector.message, subSectors: subSector.details });
 
   // ── Step 9: composite slope 方向確認 ──
-  const slopeData = await fetchIndexDirection();
+  const slopeData = await fetchIndexDirection(backtestId);
   // Also compute slope from index data if available
   let slopeVal = null;
   try {
-    const idxResp = await httpGet('http://localhost:3334/api/data', 3000);
+    let idxResp;
+    if (backtestId) {
+      idxResp = dataProvider ? dataProvider.getIndexData(atStr, backtestId) : null;
+    } else {
+      idxResp = await httpGet('http://localhost:3334/api/data', 3000);
+    }
     if (idxResp?.indexData) slopeVal = calcSlope(idxResp.indexData, 10);
   } catch {}
   
@@ -591,7 +625,10 @@ if (require.main === module) {
   const atStr = atIndex >= 0 ? args[atIndex + 1] : null;
   const jsonMode = args.includes('--json');
 
-  main({ at: atStr, json: jsonMode }).then(result => {
+  const btIndex = args.indexOf('--backtest-id');
+  const btId = btIndex >= 0 ? args[btIndex + 1] : null;
+
+  main({ at: atStr, json: jsonMode, backtestId: btId }).then(result => {
     if (jsonMode) {
       console.log(JSON.stringify(result, null, 2));
     } else {

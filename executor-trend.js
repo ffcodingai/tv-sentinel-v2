@@ -117,7 +117,8 @@ function httpGet(url, timeout=5000) {
   });
 }
 
-async function fetchRotationData() {
+async function fetchRotationData(btId) {
+  if (btId) return dataProvider ? dataProvider.getRotationData(atStr, btId) : null;
   try { if (fs.existsSync(ROTATION_UI_PATH)) return JSON.parse(fs.readFileSync(ROTATION_UI_PATH, 'utf-8')); } catch {}
   const list = ['asia_sector','china_sector','europe_sector','us_sector'];
   for (const m of list) {
@@ -127,7 +128,8 @@ async function fetchRotationData() {
 }
 
 // ── Fetch Volume Surge ──
-async function fetchVolumeSurge() {
+async function fetchVolumeSurge(btId) {
+  if (btId) return dataProvider ? dataProvider.getVolumeSurge(atStr, btId) : null;
   try {
     if (fs.existsSync(VOLUME_SURGE_PATH)) {
       const raw = fs.readFileSync(VOLUME_SURGE_PATH, 'utf-8');
@@ -162,7 +164,25 @@ function checkVolumeSurge(volData) {
   };
 }
 
-async function fetchIndexDirection() {
+async function fetchIndexDirection(btId) {
+  if (btId) {
+    try {
+      const idxData = dataProvider ? dataProvider.getIndexData(atStr, btId) : null;
+      if (!idxData) return { available: false, direction: null, message: '回測無 index 數據' };
+      const composite = idxData.composite || [];
+      if (Array.isArray(composite) && composite.length >= 3) {
+        const len = composite.length;
+        const last = composite[len-1]?.value;
+        const prev = composite[len-3]?.value;
+        if (last != null && prev != null) {
+          const dir = last >= prev ? 'up' : 'down';
+          return { available: true, direction: dir, lastValue: last, prevValue: prev,
+            message: `📊 tv-index 方向: ${dir === 'up' ? '📈上漲' : '📉下跌'} (${prev}→${last})` };
+        }
+      }
+      return { available: true, direction: null, message: 'tv-index 數據不足判斷方向' };
+    } catch { return { available: false, direction: null, message: '回測 index 錯誤' }; }
+  }
   try {
     const data = await httpGet(`${INDEX_SERVER}/api/data`, 3000);
     if (!data) return { available: false, direction: null, message: 'tv-index 無回應' };
@@ -183,7 +203,8 @@ async function fetchIndexDirection() {
   }
 }
 
-async function fetchIndexData() {
+async function fetchIndexData(btId) {
+  if (btId) return dataProvider ? dataProvider.getIndexData(atStr, btId) : null;
   try {
     const data = await httpGet(`${INDEX_SERVER}/turnpoints.json`, 3000);
     return data;
@@ -276,7 +297,7 @@ function checkSubSectorConsensus(rotData) {
 // ── Step 5: Check index direction ──
 async function checkIndexDirection(rotData, markets) {
   try {
-    const idx = await fetchIndexData();
+    const idx = await fetchIndexData(backtestId);
     if (!idx) return { available: false, message: '⚠️ tv-index 數據不可用', direction: null };
     return { available: true, message: `✅ tv-index 方向確認可用`, direction: 'detected', data: idx };
   } catch {
@@ -392,7 +413,9 @@ function analyzeAllMarkets(rotData) {
 // ── Main ──
 async function main(options = {}) {
   const atStr = options.at || null;
+  const backtestId = options.backtestId || null;
   const jsonMode = options.json || false;
+  const dataProvider = backtestId ? require('./backtest/data-provider') : null;
   const log = jsonMode ? ()=>{}
 : console.log;
 
@@ -420,7 +443,7 @@ async function main(options = {}) {
   }
 
   // ── Step 3: 商品放量檢查 ──
-  const volData = await fetchVolumeSurge();
+  const volData = await fetchVolumeSurge(backtestId);
   const volResult = checkVolumeSurge(volData);
   result.steps.push({ step:3, name:'商品放量(金銀/油/BTC/ETH/匯率)', status: volResult.hasSurge?'pass':'warn',
     detail: volResult.message, volumeSurge: volResult });
@@ -429,7 +452,7 @@ async function main(options = {}) {
   let surgeReason = surgeOk ? '' : '❌ 無放量'; // used in final
 
   // Fetch rotation data
-  const rotData = await fetchRotationData();
+  const rotData = await fetchRotationData(backtestId);
   if (!rotData?.countries) {
     result.steps[1].status = 'fail';
     result.trendHealthy = false; result.reason = '數據不可用';
@@ -452,7 +475,7 @@ async function main(options = {}) {
     detail: subSector.message, subSectors: subSector.details });
 
   // Step 7: composite slope 方向確認
-  const indexData = await fetchIndexDirection();
+  const indexData = await fetchIndexDirection(backtestId);
   // Compute slope
   let slopeVal = null;
   try {
@@ -510,7 +533,10 @@ if (require.main === module) {
   const atStr = atI>=0 ? args[atI+1] : null;
   const jsonMode = args.includes('--json');
 
-  main({ at:atStr, json:jsonMode }).then(r => {
+  const btI = args.indexOf('--backtest-id');
+  const btId = btI>=0 ? args[btI+1] : null;
+
+  main({ at:atStr, json:jsonMode, backtestId: btId }).then(r => {
     if (jsonMode) { console.log(JSON.stringify(r,null,2)); return; }
     console.log(`\n═════ 一致行情趨勢管理機器人 ═════`);
     console.log(`時間: ${r.atTime}`);
