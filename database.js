@@ -375,6 +375,28 @@ function getExecution(id) {
   return db.prepare('SELECT * FROM sentinel_executions WHERE id = ?').get(id);
 }
 
+function exportExecutionsCSV({ from, to, sentinel_type, source } = {}) {
+  let sql = `SELECT strftime('%Y-%m-%d %H:%M:%S', timestamp) as time,
+    sentinel_type, source, triggered, summary FROM sentinel_executions WHERE 1=1`;
+  const params = [];
+  if (from) { sql += ' AND timestamp >= ?'; params.push(from); }
+  if (to) { sql += ' AND timestamp <= ?'; params.push(to); }
+  if (sentinel_type) { sql += ' AND sentinel_type = ?'; params.push(sentinel_type); }
+  if (source) { sql += ' AND source = ?'; params.push(source); }
+  sql += ' ORDER BY timestamp ASC';
+  const rows = db.prepare(sql).all(...params);
+  if (rows.length === 0) return 'time,sentinel_type,source,triggered,summary';
+  const cols = Object.keys(rows[0]);
+  const header = cols.join(',');
+  const lines = rows.map(r => cols.map(c => {
+    const v = r[c];
+    if (v === null || v === undefined) return '';
+    const s = String(v);
+    return s.includes(',') || s.includes('"') ? `"${s.replace(/"/g, '""')}"` : s;
+  }).join(','));
+  return [header, ...lines].join('\n');
+}
+
 module.exports = {
   initDatabase, getDb, closeDatabase,
   getAllSentinels, getSentinel, createSentinel, updateSentinel, deleteSentinel,
@@ -386,4 +408,5 @@ module.exports = {
   createBacktestRun, getBacktestRun, listBacktestRuns,
   updateBacktestRun, registerSnapshot, registerResult,
   createExecution, getExecutions, getExecution,
+  exportExecutionsCSV,
 };

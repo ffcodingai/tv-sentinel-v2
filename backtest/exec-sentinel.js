@@ -23,6 +23,7 @@ const fs = require('fs');
 const path = require('path');
 const { initDatabase, getDb, createExecution } = require('../database');
 const { getBacktestRun, getResultDir, regResult } = require('./db-util');
+const { pushExecution, disconnect: kafkaDisconnect } = require('./kafka-push');
 
 initDatabase();
 
@@ -65,6 +66,26 @@ function parseInterval(str) {
   }
 }
 
+/** Extract key signals from executor result for Kafka payload */
+function extractKeySignals(result, sentinelType) {
+  const signals = {};
+  // Try to find volume_surge in result steps
+  if (result.steps) {
+    for (const s of result.steps) {
+      if (s.volumeSurge) signals.volume_surge = s.volumeSurge.hasSurge;
+      if (s.detail && s.detail.includes('全球')) signals.global_consensus = s.detail;
+      if (s.slope != null) signals.slope = s.slope;
+      if (s.spread) signals.spread = s.spread;
+      if (s.premium?.spread != null) signals.spread = s.premium.spread;
+      if (s.name && s.name.includes('折溢')) signals.spread = signals.spread || (s.premium?.spread);
+    }
+  }
+  // Direct fields from result
+  if (result.volumeSurge) signals.volume_surge = result.volumeSurge.hasSurge;
+  if (result.slopeVal != null) signals.slope = result.slopeVal;
+  return signals;
+}
+
 /**
  * 在單一時間點執行哨兵 — 直接呼叫 executor
  */
@@ -96,6 +117,19 @@ async function runAt(atTime) {
     summary: `${triggered ? '🚨 觸發' : '✅ 未觸發'} — ${reason.substring(0, 200)}`,
     result_json: JSON.stringify(executorResult),
   });
+
+  // 推 Kafka
+  const dt = new Date(atTime);
+  const tsMs = isNaN(dt.getTime()) ? Date.now() : dt.getTime();
+  pushExecution({
+    sentinelType: SENTINEL,
+    source: 'backtest',
+    backtestId: BACKTEST_ID,
+    timestampMs: tsMs,
+    triggered,
+    summary: reason.substring(0, 200),
+    keySignals: extractKeySignals(executorResult, SENTINEL),
+  }).catch(() => {});
 
   // 印摘要
   const icon = triggered ? '🚨' : '✅';

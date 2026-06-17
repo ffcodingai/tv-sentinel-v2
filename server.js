@@ -1,7 +1,8 @@
 const express = require('express');
 const path = require('path');
 const cors = require('cors');
-const { initDatabase, closeDatabase, getAllSentinels, getSentinel, createSentinel, updateSentinel, deleteSentinel, setSentinelStatus, setTriggered, addLog, getLogs, getMarketStates, setMarketState, addDataAssignment, getDataAssignments, getStats } = require('./database');
+const { initDatabase, closeDatabase, getAllSentinels, getSentinel, createSentinel, updateSentinel, deleteSentinel, setSentinelStatus, setTriggered, addLog, getLogs, getMarketStates, setMarketState, addDataAssignment, getDataAssignments, getStats, createExecution } = require('./database');
+const { pushExecution } = require('./backtest/kafka-push');
 const http = require('http');
 
 const PORT = 3333;
@@ -161,6 +162,13 @@ app.post('/api/sentinels/check', express.json(), async (req, res) => {
       summary: `${result.triggered ? '🚨' : '✅'} ${result.triggerType || 'check'} — ${(result.triggerReason || '').substring(0, 200)}`,
       result_json: JSON.stringify(result),
     });
+    pushExecution({
+      sentinelType: 'check', source, backtestId: null,
+      timestampMs: Date.now(),
+      triggered: !!result.triggered,
+      summary: (result.triggerReason || '').substring(0, 200),
+      keySignals: {},
+    }).catch(() => {});
 
     // Log result every run (not just triggered)
     const turnId = sentinelIdByType('up_turn');
@@ -206,6 +214,13 @@ app.post('/api/sentinels/trend-check', express.json(), async (req, res) => {
       summary: `${result.trendHealthy ? '🟢' : '⚠️'} 趨勢${result.trendHealthy ? '健康' : '轉弱'} — ${(result.reason || '').substring(0, 200)}`,
       result_json: JSON.stringify(result),
     });
+    pushExecution({
+      sentinelType: 'trend', source, backtestId: null,
+      timestampMs: Date.now(),
+      triggered: !!result.trendHealthy,
+      summary: (result.reason || '').substring(0, 200),
+      keySignals: {},
+    }).catch(() => {});
 
     if (result.trendHealthy) {
       const trendId = sentinelIdByType('up_trend');
@@ -297,6 +312,13 @@ app.post('/api/sentinels/lt-check', express.json(), async (req, res) => {
       summary: `${result.ltTriggered ? '🚨' : '✅'} LT — ${(result.ltReason || '').substring(0, 200)}`,
       result_json: JSON.stringify(result),
     });
+    pushExecution({
+      sentinelType: 'lt', source, backtestId: null,
+      timestampMs: Date.now(),
+      triggered: !!result.ltTriggered,
+      summary: (result.ltReason || '').substring(0, 200),
+      keySignals: {},
+    }).catch(() => {});
 
     const ltId = sentinelIdByType('lt');
     if (ltId) {
@@ -337,6 +359,13 @@ app.post('/api/sentinels/st-check', express.json(), async (req, res) => {
       summary: `${result.stTriggered ? '🚨' : '✅'} ST — ${(result.stReason || '').substring(0, 200)}`,
       result_json: JSON.stringify(result),
     });
+    pushExecution({
+      sentinelType: 'st', source, backtestId: null,
+      timestampMs: Date.now(),
+      triggered: !!result.stTriggered,
+      summary: (result.stReason || '').substring(0, 200),
+      keySignals: {},
+    }).catch(() => {});
 
     const stId = sentinelIdByType('st');
     if (stId) {
