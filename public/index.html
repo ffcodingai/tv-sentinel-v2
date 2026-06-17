@@ -350,6 +350,16 @@ function rd_tab4(){
  loadDashboard();
 }
 
+function hktStr(isoStr){
+ if(!isoStr)return{date:'--',time:'--'};
+ let d=new Date(isoStr);
+ if(isNaN(d.getTime()))return{date:isoStr.slice(0,10),time:isoStr.slice(11,19)};
+ d=new Date(d.getTime()+8*3600000);
+ let y=d.getUTCFullYear(),mo=String(d.getUTCMonth()+1).padStart(2,'0'),da=String(d.getUTCDate()).padStart(2,'0');
+ let h=String(d.getUTCHours()).padStart(2,'0'),mi=String(d.getUTCMinutes()).padStart(2,'0');
+ return{date:y+'-'+mo+'-'+da,time:h+':'+mi};
+}
+
 async function loadDashboard(){
  let body=document.getElementById('dashBody');
  if(!body)return;
@@ -400,8 +410,8 @@ async function loadDashboard(){
    let resIcon=d.triggered?'🔴':'✅';
    let trigIcon=d.triggered?'🔴 是':'✅ 否';
    let typeIcon=icons[d.sentinel_type]||'🔵';
-   let ts=d.timestamp?d.timestamp.slice(11,19):'--';
-   let date=d.timestamp?d.timestamp.slice(0,10):'';
+   let hkt=hktStr(d.timestamp);
+   let date=hkt.date,ts=hkt.time;
    h+='<tr>'+
     '<td style="white-space:nowrap;font-size:10px">'+date+'<br>'+ts+'</td>'+
     '<td style="white-space:nowrap">'+typeIcon+' '+(d.sentinel_type||'')+'</td>'+
