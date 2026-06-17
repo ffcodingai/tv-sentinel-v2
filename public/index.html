@@ -430,7 +430,7 @@ function rd_tab4(){
 
 async function loadDashboard(){
  try{
-  let r=await fetch(A+'/api/executions?limit=30');
+  let r=await fetch(A+'/executions?limit=30');
   let data=await r.json();
   if(!Array.isArray(data))return;
   // Summary cards
