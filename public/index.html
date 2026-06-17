@@ -85,7 +85,7 @@ select:focus{border-color:var(--gold)}
 </head>
 <body>
 <div class="hdr"><h1>🤖 哨兵指揮中心</h1><div class="hs"><span id="clk">--:--:--</span><span id="cnt0">0</span><span id="rotCnt">0 rotation</span><span id="ltCnt" style="color:#f97316;font-size:11px">LT:0</span><span id="stCnt" style="color:#3b82f6;font-size:11px">ST:0</span></div></div>
-<div class="c"><div class="tb" id="tabs"></div><div class="tab" id="p0"></div><div class="tab" id="p1"></div><div class="tab" id="p2"></div><div class="tab" id="p3"></div><div class="tab" id="p4"></div><div class="tab" id="p5"></div><div class="tab" id="p6"></div></div>
+<div class="c"><div class="tb" id="tabs"></div><div class="tab" id="p0"></div><div class="tab" id="p1"></div><div class="tab" id="p2"></div><div class="tab" id="p3"></div><div class="tab" id="p4"></div><div class="tab" id="p6"></div></div>
 <script>
 const A='/api';
 const RBT=[
@@ -148,8 +148,7 @@ function rd(i){
  if(i<2)rd_tab01(i);
  else if(i===2)rd_tab2(i);
  else if(i===3||i===4)rd_tab01(i); // LT/ST use same card layout
- else if(i===5)rd_tab3();
- else if(i===6)rd_tab4();
+ else if(i===5)rd_tab4();
 }
 
 // ─── Tabs 0 & 1 (existing) ───
@@ -469,12 +468,12 @@ setInterval(()=>{let p6=document.getElementById('p6');if(p6&&p6.classList.contai
 let tb=document.getElementById('tabs');
 for(let i=0;i<RBT.length;i++){
  let b=document.createElement('button');
- b.className='tbb'+(i===0?' on':'');
+ b.className='tbb'+(i===RBT.length-1?' on':'');
  b.textContent=RBT[i].ic+' '+RBT[i].nm;
  b.onclick=(function(idx){return function(){document.querySelectorAll('.tbb').forEach(t=>t.classList.remove('on'));document.querySelectorAll('.tab').forEach(t=>t.classList.remove('on'));this.classList.add('on');let tp=document.getElementById('p'+idx);if(tp)tp.classList.add('on');rd(idx);};})(i);
  tb.appendChild(b);
 }
-rd(0);rd(1);rd(2);let p0=document.getElementById('p0');if(p0)p0.classList.add('on');
+rd(0);rd(1);rd(2);rd(5);let p6=document.getElementById('p6');if(p6)p6.classList.add('on');
 ck();setInterval(ck,1000);
 fetch(A+'/sentinels').then(r=>r.json()).then(d=>{let c=document.getElementById('cnt0');if(c&&d)c.textContent=d.length+' 個哨兵';}).catch(()=>{});
 fetch(A+'/sentinels?type=sector_rotation').then(r=>r.json()).then(d=>{let c=document.getElementById('rotCnt');if(c&&d)c.textContent=d.length+' rotation';}).catch(()=>{});
