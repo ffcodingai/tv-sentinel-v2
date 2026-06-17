@@ -85,7 +85,7 @@ select:focus{border-color:var(--gold)}
 </head>
 <body>
 <div class="hdr"><h1>🤖 哨兵指揮中心</h1><div class="hs"><span id="clk">--:--:--</span><span id="cnt0">0</span><span id="rotCnt">0 rotation</span><span id="ltCnt" style="color:#f97316;font-size:11px">LT:0</span><span id="stCnt" style="color:#3b82f6;font-size:11px">ST:0</span></div></div>
-<div class="c"><div class="tb" id="tabs"></div><div class="tab" id="p0"></div><div class="tab" id="p1"></div><div class="tab" id="p2"></div><div class="tab" id="p3"></div><div class="tab" id="p4"></div><div class="tab" id="p5"></div></div>
+<div class="c"><div class="tb" id="tabs"></div><div class="tab" id="p0"></div><div class="tab" id="p1"></div><div class="tab" id="p2"></div><div class="tab" id="p3"></div><div class="tab" id="p4"></div><div class="tab" id="p5"></div><div class="tab" id="p6"></div></div>
 <script>
 const A='/api';
 const RBT=[
@@ -116,7 +116,8 @@ const RBT=[
  cd:['① S段確認 ✅ 下跌趨勢運行中','② 結構破壞 ⚠️ 支撐測試多次','③ SAR/斜率確認 🔄 翻轉信號','④ 輸出 ST-xxx 📝 新段生成'],
  arch:'S段→支撐測試→SAR翻轉?→ST-xxx→T轉折\\nS→觸底→放量→SAR翻轉→ST確認',
  ck:'ST哨兵檢查觸發，結果待監控回報'},
-{ic:'📋',nm:'執行日誌',tp:'logs',ep:''}
+{ic:'📋',nm:'執行日誌',tp:'logs',ep:''},
+{ic:'📊',nm:'儀表板',tp:'dashboard',ep:''}
 ];
 
 // ─── Tab 2 (Rotation) Data ───
@@ -148,6 +149,7 @@ function rd(i){
  else if(i===2)rd_tab2(i);
  else if(i===3||i===4)rd_tab01(i); // LT/ST use same card layout
  else if(i===5)rd_tab3();
+ else if(i===6)rd_tab4();
 }
 
 // ─── Tabs 0 & 1 (existing) ───
@@ -417,6 +419,51 @@ function escHtml(s){
  d.textContent=s;
  return d.innerHTML;
 }
+
+// ─── Tab 6: Dashboard ───
+function rd_tab4(){
+ let e=document.getElementById('p6');
+ if(!e)return;
+ e.innerHTML='<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:12px;margin-bottom:16px" id="dashCards"></div>'+'<div class="cd"><h2>📋 最近執行紀錄</h2><div class="log-table-wrap"><table><thead><tr><th>時間</th><th>哨兵</th><th>來源</th><th>結果</th><th>摘要</th></tr></thead><tbody id="dashBody"></tbody></table></div></div>';
+ loadDashboard();
+}
+
+async function loadDashboard(){
+ try{
+  let r=await fetch(A+'/api/executions?limit=30');
+  let data=await r.json();
+  if(!Array.isArray(data))return;
+  // Summary cards
+  let types={};
+  data.forEach(d=>{let t=d.sentinel_type;if(!types[t])types[t]={total:0,triggered:0,last:null};types[t].total++;if(d.triggered)types[t].triggered++;types[t].last=d.timestamp;});
+  let cards=document.getElementById('dashCards');
+  if(!cards)return;
+  let icons={check:'🔔',trend:'📈',lt:'⬇️',st:'⬆️'};
+  let labels={check:'轉折哨兵',trend:'趨勢管理',lt:'LT 上漲轉折',st:'ST 下跌轉折'};
+  cards.innerHTML=Object.entries(types).map(([t,v]) =>
+   '<div class="cd" style="text-align:center;padding:16px">'+
+   '<div style="font-size:32px;margin-bottom:8px">'+(icons[t]||'🔵')+'</div>'+
+   '<div style="font-size:14px;font-weight:600">'+(labels[t]||t)+'</div>'+
+   '<div style="display:flex;justify-content:center;gap:20px;margin:12px 0">'+
+   '<div><div style="font-size:22px;font-weight:700;color:var(--gcl)">'+v.total+'</div><div style="font-size:11px;color:var(--dim)">執行次數</div></div>'+
+   '<div><div style="font-size:22px;font-weight:700;color:'+(v.triggered>0?'var(--red)':'var(--dim)')+'">'+v.triggered+'</div><div style="font-size:11px;color:var(--dim)">觸發/異常</div></div>'+
+   '</div>'+
+   '<div style="font-size:11px;color:var(--dim)">最近: '+(v.last?v.last.slice(11,19):'--')+'</div>'+
+   '</div>'
+  ).join('');
+  // Table
+  let tb=document.getElementById('dashBody');
+  if(!tb)return;
+  tb.innerHTML=data.map(d=>{
+   let icon=d.triggered?'🔴':'✅';
+   let typeIcon=icons[d.sentinel_type]||'🔵';
+   return '<tr><td>'+(d.timestamp?d.timestamp.slice(11,19):'--')+'</td><td>'+typeIcon+' '+(d.sentinel_type||'')+'</td><td>'+(d.source||'')+'</td><td>'+icon+'</td><td>'+(d.summary||'').substring(0,80)+'</td></tr>';
+  }).join('');
+ }catch(e){console.log('Dashboard error:',e);}
+}
+
+// Auto-refresh dashboard every 10s
+setInterval(()=>{let p6=document.getElementById('p6');if(p6&&p6.classList.contains('on'))loadDashboard();},10000);
 
 // ─── Init ───
 let tb=document.getElementById('tabs');

@@ -1,7 +1,7 @@
 const express = require('express');
 const path = require('path');
 const cors = require('cors');
-const { initDatabase, closeDatabase, getAllSentinels, getSentinel, createSentinel, updateSentinel, deleteSentinel, setSentinelStatus, setTriggered, addLog, getLogs, getMarketStates, setMarketState, addDataAssignment, getDataAssignments, getStats, createExecution } = require('./database');
+const { initDatabase, closeDatabase, getAllSentinels, getSentinel, createSentinel, updateSentinel, deleteSentinel, setSentinelStatus, setTriggered, addLog, getLogs, getMarketStates, setMarketState, addDataAssignment, getDataAssignments, getStats, createExecution, getExecutions } = require('./database');
 const { pushExecution } = require('./backtest/kafka-push');
 const http = require('http');
 
@@ -486,6 +486,16 @@ app.post('/api/assignments', (req, res) => {
 // ──────────────────────────────────────────
 //  Stats
 // ──────────────────────────────────────────
+
+app.get('/api/executions', (req, res) => {
+  const { type, source, triggered, limit } = req.query;
+  res.json(getExecutions({
+    sentinel_type: type || null,
+    source: source || null,
+    triggered: triggered !== undefined ? triggered === '1' || triggered === 'true' : undefined,
+    limit: parseInt(limit) || 30,
+  }));
+});
 
 app.get('/api/stats', (req, res) => {
   res.json(getStats());
