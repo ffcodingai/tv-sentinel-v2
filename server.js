@@ -153,6 +153,15 @@ app.post('/api/sentinels/check', express.json(), async (req, res) => {
     const options = { at: req.body.at || null, source };
     const result = await runSentinelCheck(options);
 
+    // Save execution record
+    createExecution({
+      sentinel_type: 'check', source, backtest_id: null,
+      timestamp: new Date().toISOString(),
+      triggered: !!result.triggered,
+      summary: `${result.triggered ? '🚨' : '✅'} ${result.triggerType || 'check'} — ${(result.triggerReason || '').substring(0, 200)}`,
+      result_json: JSON.stringify(result),
+    });
+
     // Log result every run (not just triggered)
     const turnId = sentinelIdByType('up_turn');
     if (turnId) {
@@ -189,6 +198,14 @@ app.post('/api/sentinels/trend-check', express.json(), async (req, res) => {
     const source = req.body.source === 'cron' ? 'cron' : 'manual';
     const options = { at: req.body.at || null, source };
     const result = await runTrendCheck(options);
+
+    createExecution({
+      sentinel_type: 'trend', source, backtest_id: null,
+      timestamp: new Date().toISOString(),
+      triggered: !!result.trendHealthy,
+      summary: `${result.trendHealthy ? '🟢' : '⚠️'} 趨勢${result.trendHealthy ? '健康' : '轉弱'} — ${(result.reason || '').substring(0, 200)}`,
+      result_json: JSON.stringify(result),
+    });
 
     if (result.trendHealthy) {
       const trendId = sentinelIdByType('up_trend');
@@ -273,6 +290,14 @@ app.post('/api/sentinels/lt-check', express.json(), async (req, res) => {
     const options = { at: req.body.at || null, source };
     const result = await runLtCheck(options);
 
+    createExecution({
+      sentinel_type: 'lt', source, backtest_id: null,
+      timestamp: new Date().toISOString(),
+      triggered: !!result.ltTriggered,
+      summary: `${result.ltTriggered ? '🚨' : '✅'} LT — ${(result.ltReason || '').substring(0, 200)}`,
+      result_json: JSON.stringify(result),
+    });
+
     const ltId = sentinelIdByType('lt');
     if (ltId) {
       setTriggered(ltId);
@@ -304,6 +329,14 @@ app.post('/api/sentinels/st-check', express.json(), async (req, res) => {
     const source = req.body.source === 'cron' ? 'cron' : 'manual';
     const options = { at: req.body.at || null, source };
     const result = await runStCheck(options);
+
+    createExecution({
+      sentinel_type: 'st', source, backtest_id: null,
+      timestamp: new Date().toISOString(),
+      triggered: !!result.stTriggered,
+      summary: `${result.stTriggered ? '🚨' : '✅'} ST — ${(result.stReason || '').substring(0, 200)}`,
+      result_json: JSON.stringify(result),
+    });
 
     const stId = sentinelIdByType('st');
     if (stId) {

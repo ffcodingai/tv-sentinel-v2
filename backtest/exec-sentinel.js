@@ -21,7 +21,7 @@
 
 const fs = require('fs');
 const path = require('path');
-const { initDatabase, getDb } = require('../database');
+const { initDatabase, getDb, createExecution } = require('../database');
 const { getBacktestRun, getResultDir, regResult } = require('./db-util');
 
 initDatabase();
@@ -76,17 +76,28 @@ async function runAt(atTime) {
   const { main: runSentinel } = require(`../${EXECUTOR_MAP[SENTINEL]}`);
   const executorResult = await runSentinel({ at: atTime, backtestId: BACKTEST_ID, json: true });
 
-  // 寫入結果
+  // 寫入結果檔案
   const tsSafe = atTime.replace(/[: ]/g, '-');
   const fileName = `${SENTINEL}-${tsSafe}.json`;
   const outFile = path.join(resultDir, fileName);
   fs.writeFileSync(outFile, JSON.stringify(executorResult, null, 2));
   regResult(BACKTEST_ID, SENTINEL, atTime, fileName);
 
-  // 印摘要
+  // 寫入 sentinel_executions (每次執行一條記錄)
   const triggerKeys = { lt: 'ltTriggered', st: 'stTriggered', trend: 'trendHealthy', check: 'triggered' };
-  const triggered = executorResult[triggerKeys[SENTINEL]];
+  const triggered = !!executorResult[triggerKeys[SENTINEL]];
   const reason = executorResult.ltReason || executorResult.stReason || executorResult.triggerReason || executorResult.reason || '';
+  createExecution({
+    sentinel_type: SENTINEL,
+    source: 'backtest',
+    backtest_id: BACKTEST_ID,
+    timestamp: atTime,
+    triggered,
+    summary: `${triggered ? '🚨 觸發' : '✅ 未觸發'} — ${reason.substring(0, 200)}`,
+    result_json: JSON.stringify(executorResult),
+  });
+
+  // 印摘要
   const icon = triggered ? '🚨' : '✅';
   console.log(`  [${atTime}] ${icon} ${triggered ? '觸發' : '未觸發'} — ${reason.substring(0, 80)}`);
 
@@ -115,9 +126,11 @@ async function main() {
 
   // 批量模式
   if (FROM && TO) {
-    console.log(`  Range: ${FROM} → ${TO} (${INTERVAL})`);
-    const startMs = new Date(FROM).getTime();
-    const endMs   = new Date(TO).getTime();
+    const toFull = TO.includes('T') ? TO : `${TO}T23:59:59`;
+    const fromFull = FROM.includes('T') ? FROM : `${FROM}T00:00:00`;
+    console.log(`  Range: ${fromFull} → ${toFull} (${INTERVAL})`);
+    const startMs = new Date(fromFull).getTime();
+    const endMs   = new Date(toFull).getTime();
     const intMs   = parseInterval(INTERVAL);
     let count = 0;
 

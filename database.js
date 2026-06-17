@@ -145,6 +145,24 @@ function initDatabase() {
     `);
   }
 
+  // Ensure sentinel_executions table exists
+  const execTable = db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='sentinel_executions'").get();
+  if (!execTable) {
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS sentinel_executions (
+        id              TEXT PRIMARY KEY,
+        sentinel_type   TEXT NOT NULL,
+        source          TEXT DEFAULT 'live',
+        backtest_id     TEXT,
+        timestamp       TEXT,
+        triggered       INTEGER DEFAULT 0,
+        summary         TEXT,
+        result_json     TEXT,
+        created_at      TEXT DEFAULT (datetime('now','localtime'))
+      )
+    `);
+  }
+
   return db;
 }
 
@@ -331,6 +349,32 @@ function registerResult(runId, sentinelType, timestamp, filePath) {
   return updateBacktestRun(runId, { results });
 }
 
+// ── Sentinel Executions ──
+
+function createExecution({ sentinel_type, source, backtest_id, timestamp, triggered, summary, result_json }) {
+  const id = crypto.randomUUID();
+  db.prepare(`
+    INSERT INTO sentinel_executions (id, sentinel_type, source, backtest_id, timestamp, triggered, summary, result_json)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+  `).run(id, sentinel_type, source || 'live', backtest_id || null, timestamp || null, triggered ? 1 : 0, summary || '', result_json || '{}');
+  return id;
+}
+
+function getExecutions({ sentinel_type, source, triggered, limit } = {}) {
+  let sql = 'SELECT * FROM sentinel_executions WHERE 1=1';
+  const params = [];
+  if (sentinel_type) { sql += ' AND sentinel_type = ?'; params.push(sentinel_type); }
+  if (source) { sql += ' AND source = ?'; params.push(source); }
+  if (triggered !== undefined) { sql += ' AND triggered = ?'; params.push(triggered ? 1 : 0); }
+  sql += ' ORDER BY created_at DESC';
+  if (limit) sql += ' LIMIT ?';
+  return db.prepare(sql).all(...params, ...(limit ? [limit] : []));
+}
+
+function getExecution(id) {
+  return db.prepare('SELECT * FROM sentinel_executions WHERE id = ?').get(id);
+}
+
 module.exports = {
   initDatabase, getDb, closeDatabase,
   getAllSentinels, getSentinel, createSentinel, updateSentinel, deleteSentinel,
@@ -341,4 +385,5 @@ module.exports = {
   getStats,
   createBacktestRun, getBacktestRun, listBacktestRuns,
   updateBacktestRun, registerSnapshot, registerResult,
+  createExecution, getExecutions, getExecution,
 };
