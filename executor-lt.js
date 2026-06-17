@@ -17,6 +17,9 @@
 
 const http = require('http');
 const fs = require('fs');
+let dataProvider = null;
+let atStr = null;  // module-level for closure
+
 
 // ── Config ──
 const SECTOR_API = 'http://192.168.25.127:8288';
@@ -182,10 +185,11 @@ async function checkResistanceTests(markets, btId, targetDate) {
 
 // ── Main ──
 async function main(options = {}) {
-  const atStr = options.at || null;
+  atStr = options.at || null;
+  const _ignored = atStr;
   const backtestId = options.backtestId || null;
   const jsonMode = options.json || false;
-  const dataProvider = backtestId ? require('./backtest/data-provider') : null;
+  dataProvider = backtestId ? require('./backtest/data-provider') : null;
   const log = jsonMode ? () => {} : console.log;
 
   const result = {

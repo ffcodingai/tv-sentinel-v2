@@ -66,59 +66,31 @@ function parseInterval(str) {
 }
 
 /**
- * 在單一時間點執行哨兵
- * TODO: 真正接入 executor 時:
- *   const { main: runSentinel } = require(`../${EXECUTOR_MAP[SENTINEL]}`);
- *   const dataProvider = require('./data-provider');
- *   改寫 executor 內的 fetchRotationData/fetchVolumeSurge/fetchIndexData
- *   改為呼叫 dataProvider.getRotationData(atTime, BACKTEST_ID) 等
- *   結果寫入 resultDir / 註冊 DB
+ * 在單一時間點執行哨兵 — 直接呼叫 executor
  */
 async function runAt(atTime) {
   const resultDir = getResultDir(BACKTEST_ID);
   fs.mkdirSync(resultDir, { recursive: true });
 
-  // ── 先用 data-provider 確認數據是否存在 ──
-  const dp = require('./data-provider');
-  const rotation = dp.getRotationData(atTime, BACKTEST_ID);
-  const volume   = dp.getVolumeSurge(atTime, BACKTEST_ID);
-  const index    = dp.getIndexData(atTime, BACKTEST_ID);
-  const dateStr  = atTime.split(' ')[0];
-  const resist   = dp.getResistanceData(dateStr, BACKTEST_ID);
-
-  const hasIssues = [];
-  if (!rotation) hasIssues.push('rotation');
-  if (!volume)   hasIssues.push('volume_surge');
-  if (!index)    hasIssues.push('composite_index');
-  if (!resist)   hasIssues.push('resistance');
-
-  const result = {
-    timestamp: atTime,
-    sentinel: SENTINEL,
-    backtestId: BACKTEST_ID,
-    dataProvider: {
-      rotation: !!rotation,
-      volume_surge: !!volume,
-      composite_index: !!index,
-      resistance: !!resist,
-      missing: hasIssues,
-    },
-    executor: null,
-    status: 'pending_executor_integration',
-    message: hasIssues.length > 0
-      ? `⚠️ 缺少數據源: ${hasIssues.join(', ')}`
-      : `✅ 數據齊全, 等待 executor 接入 data-provider 後即可執行`,
-  };
+  // ── 呼叫 executor ──
+  const { main: runSentinel } = require(`../${EXECUTOR_MAP[SENTINEL]}`);
+  const executorResult = await runSentinel({ at: atTime, backtestId: BACKTEST_ID, json: true });
 
   // 寫入結果
   const tsSafe = atTime.replace(/[: ]/g, '-');
   const fileName = `${SENTINEL}-${tsSafe}.json`;
   const outFile = path.join(resultDir, fileName);
-  fs.writeFileSync(outFile, JSON.stringify(result, null, 2));
+  fs.writeFileSync(outFile, JSON.stringify(executorResult, null, 2));
   regResult(BACKTEST_ID, SENTINEL, atTime, fileName);
 
-  console.log(`  [${atTime}] ${result.message} → ${fileName}`);
-  return result;
+  // 印摘要
+  const triggerKeys = { lt: 'ltTriggered', st: 'stTriggered', trend: 'trendHealthy', check: 'triggered' };
+  const triggered = executorResult[triggerKeys[SENTINEL]];
+  const reason = executorResult.ltReason || executorResult.stReason || executorResult.triggerReason || executorResult.reason || '';
+  const icon = triggered ? '🚨' : '✅';
+  console.log(`  [${atTime}] ${icon} ${triggered ? '觸發' : '未觸發'} — ${reason.substring(0, 80)}`);
+
+  return executorResult;
 }
 
 async function main() {

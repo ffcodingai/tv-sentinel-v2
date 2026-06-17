@@ -125,6 +125,26 @@ function initDatabase() {
     }
   }
 
+  // Ensure backtest_runs table exists (may be missing in older DBs)
+  const btTable = db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='backtest_runs'").get();
+  if (!btTable) {
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS backtest_runs (
+        id          TEXT PRIMARY KEY,
+        name        TEXT DEFAULT '',
+        from_time   TEXT,
+        to_time     TEXT,
+        interval    TEXT DEFAULT '1h',
+        status      TEXT DEFAULT 'pending',
+        config      TEXT DEFAULT '{}',
+        snapshots   TEXT DEFAULT '{}',
+        results     TEXT DEFAULT '{}',
+        created_at  TEXT DEFAULT (datetime('now','localtime')),
+        updated_at  TEXT DEFAULT (datetime('now','localtime'))
+      )
+    `);
+  }
+
   return db;
 }
 

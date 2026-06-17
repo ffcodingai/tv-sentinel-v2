@@ -55,6 +55,9 @@ const fs = require('fs');
 //   - 下跌趨勢: 商品放量↓ + 全球看空 + 折溢價小 + slope↓
 //
 // ── Config ──
+let dataProvider = null;
+let atStr = null;  // module-level for closure
+
 const SECTOR_API = 'http://192.168.25.127:8288';
 const INDEX_SERVER = 'http://localhost:3334';
 const ROTATION_UI_PATH = '/tmp/sector-rotation-ui.json';
@@ -412,10 +415,11 @@ function analyzeAllMarkets(rotData) {
 
 // ── Main ──
 async function main(options = {}) {
-  const atStr = options.at || null;
+  atStr = options.at || null;
+  const _ignored = atStr;
   const backtestId = options.backtestId || null;
   const jsonMode = options.json || false;
-  const dataProvider = backtestId ? require('./backtest/data-provider') : null;
+  dataProvider = backtestId ? require('./backtest/data-provider') : null;
   const log = jsonMode ? ()=>{}
 : console.log;
 

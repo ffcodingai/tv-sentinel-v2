@@ -21,6 +21,9 @@
 
 const http = require('http');
 const path = require('path');
+let dataProvider = null;
+let atStr = null;  // module-level for closure
+
 
 // ── Config ──
 // ── 物料 (Data Sources) — 轉折哨兵專用 ──
@@ -460,10 +463,11 @@ function analyzeAllMarkets(rotData) {
 
 // ── Main entry ──
 async function main(options = {}) {
-  const atStr = options.at || null;
+  atStr = options.at || null;
+  const _ignored = atStr;
   const backtestId = options.backtestId || null;
   const jsonMode = options.json || false;
-  const dataProvider = backtestId ? require('./backtest/data-provider') : null;
+  dataProvider = backtestId ? require('./backtest/data-provider') : null;
   const log = jsonMode ? () => {} : console.log;
 
   const result = {

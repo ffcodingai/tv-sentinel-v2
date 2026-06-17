@@ -4,7 +4,9 @@
  */
 const path = require('path');
 const fs = require('fs');
-const { createBacktestRun, getBacktestRun, registerSnapshot, registerResult, listBacktestRuns } = require('../database');
+const { initDatabase, createBacktestRun, getBacktestRun, registerSnapshot, registerResult, listBacktestRuns } = require('../database');
+
+initDatabase();
 
 const BACKTEST_ROOT = path.join(__dirname); // ~/tv-sentinel/backtest/
 
