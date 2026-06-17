@@ -116,7 +116,6 @@ const RBT=[
  cd:['① S段確認 ✅ 下跌趨勢運行中','② 結構破壞 ⚠️ 支撐測試多次','③ SAR/斜率確認 🔄 翻轉信號','④ 輸出 ST-xxx 📝 新段生成'],
  arch:'S段→支撐測試→SAR翻轉?→ST-xxx→T轉折\\nS→觸底→放量→SAR翻轉→ST確認',
  ck:'ST哨兵檢查觸發，結果待監控回報'},
-{ic:'📋',nm:'執行日誌',tp:'logs',ep:''},
 {ic:'📊',nm:'儀表板',tp:'dashboard',ep:''}
 ];
 
@@ -316,110 +315,7 @@ async function execRotation(marketId){
  if(btn){btn.textContent='▶ 執行';btn.disabled=false;}
 }
 
-// ─── Tab 3: 執行日誌 ───
-function rd_tab3(){
- let e=document.getElementById('p5');
- if(!e)return;
- e.innerHTML=
- '<div class="cd">'+
-  '<h2>📋 哨兵執行日誌</h2>'+
-  '<div class="log-bar">'+
-   '<label>篩選哨兵:</label><select id="logFilter" onchange="loadLogs()">'+
-    '<option value="">全部哨兵</option>'+
-   '</select>'+
-   '<label>顯示:</label><select id="logLimit" onchange="loadLogs()">'+
-    '<option value="30">最近 30 筆</option>'+
-    '<option value="100" selected>最近 100 筆</option>'+
-    '<option value="200">最近 200 筆</option>'+
-   '</select>'+
-   '<button class="btn bg" onclick="loadLogs()">🔄 重新整理</button>'+
-   '<span class="log-count" id="logCount"></span>'+
-   '<span class="log-refresh" id="logTimer"></span>'+
-  '</div>'+
-  '<div class="log-table-wrap"><table><thead><tr>'+
-   '<th>時間</th><th>哨兵</th><th>事件</th><th>訊息</th>'+
-  '</tr></thead><tbody id="logBody"></tbody></table></div>'+
- '</div>';
-
- // Populate filter dropdown
- fetch(A+'/sentinels').then(r=>r.json()).then(sentinels=>{
-  let sel=document.getElementById('logFilter');
-  sentinels.forEach(s=>{
-   let o=document.createElement('option');
-   o.value=s.id;
-   o.textContent=s.name+' ('+s.type+')';
-   sel.appendChild(o);
-  });
- }).catch(()=>{});
-
- loadLogs();
- startLogRefresh();
-}
-
-function startLogRefresh(){
- if(logTimer)clearInterval(logTimer);
- logTimer=setInterval(()=>{
-  let p5=document.getElementById('p5');
-  if(!p5||!p5.classList.contains('on'))return;
-  let el=document.getElementById('logTimer');
-  if(el){
-   let n=parseInt(el.dataset.count||'0')+1;
-   el.dataset.count=n;
-   el.textContent='⏳ 再 '+(5-n)+' 秒自動更新';
-   if(n>=5){el.dataset.count='0';loadLogs(true);}
-  }
- },1000);
-}
-
-async function loadLogs(silent){
- let body=document.getElementById('logBody');
- let tim=document.getElementById('logTimer');
- if(!body)return;
- if(!silent&&tim)tim.textContent='⏳ 載入中...';
-
- try{
-  let sid=document.getElementById('logFilter').value;
-  let lim=document.getElementById('logLimit').value;
-  let url=A+'/logs?limit='+lim;
-  if(sid)url+='&sentinel_id='+sid;
-  let logs=await fetch(url).then(r=>r.json());
-  if(!Array.isArray(logs)){body.innerHTML='<tr><td colspan="4" style="color:var(--red)">載入失敗</td></tr>';return;}
-
-  let h='';
-  logs.forEach(l=>{
-   let ev=l.event||'';
-   let msg=l.message||'';
-   let nm=l.sentinel_name||'(unknown)';
-   let ts=l.triggered_at||'';
-   let evCls=ev==='triggered'?'tr':ev==='info'?'info':ev==='state_change'?'sc':'';
-   let evDot='<span class="log-evtdot '+evCls+'"></span>';
-   let evLabel=ev==='triggered'?'🔴 觸發':ev==='info'?'ℹ️ 資訊':ev==='state_change'?'🔄 狀態變更':ev==='error'?'❌ 錯誤':ev;
-   h+='<tr class="log-row-'+evCls+'">'+
-    '<td style="white-space:nowrap;font-size:10px">'+ts+'</td>'+
-    '<td style="white-space:nowrap">'+nm+'</td>'+
-    '<td>'+evDot+evLabel+'</td>'+
-    '<td style="max-width:500px;overflow:hidden;text-overflow:ellipsis">'+escHtml(msg)+'</td>'+
-   '</tr>';
-  });
-  body.innerHTML=h||'<tr><td colspan="4" style="color:var(--dim)">暫無日誌</td></tr>';
-
-  let cnt=document.getElementById('logCount');
-  if(cnt)cnt.textContent='共 '+logs.length+' 筆';
-  let n=document.getElementById('logTimer');
-  if(n){n.dataset.count='0';n.textContent='🟢 已更新';}
- }catch(e){
-  body.innerHTML='<tr><td colspan="4" style="color:var(--red)">❌ '+escHtml(e.message)+'</td></tr>';
-  if(!silent&&tim)tim.textContent='❌ 載入失敗';
- }
-}
-
-function escHtml(s){
- let d=document.createElement('div');
- d.textContent=s;
- return d.innerHTML;
-}
-
-// ─── Tab 6: Dashboard ───
+// ─── Tab 5: 儀表板 (含執行日誌) ───
 function rd_tab4(){
  let e=document.getElementById('p6');
  if(!e)return;
