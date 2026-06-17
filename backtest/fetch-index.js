@@ -57,27 +57,31 @@ async function main() {
       let parsed;
       try { parsed = JSON.parse(jData); } catch { return; }
 
-      // Build a format compatible with what localhost:3334/api/data would return
-      const entry = {
-        tsFm,
-        tsMs,
-        compositeIndex: parsed.compositeIndex || [],
-        spreadRecords: parsed.spreadRecords || [],
-        segments: parsed.segments || [],
-        // Also build the .composite array format that executor.js uses for fetchIndexDirection
-        composite: (parsed.compositeIndex || []).map((pt, i) => ({
-          value: typeof pt === 'number' ? pt : (pt.value || 0),
-          time: pt.time || (tsMs - (parsed.compositeIndex.length - 1 - i) * 300000),
-        })),
-        // Build indexData format used by calcSlope
-        indexData: (parsed.compositeIndex || []).map((pt) => ({
-          value: typeof pt === 'number' ? pt : (pt.value || 0),
-          time: pt.time || tsMs,
-        })),
-        // Turnpoints (if available in parsed data)
-        turnpoints: parsed.turnpoints || parsed.H35H36 || null,
-      };
-      buffer.set(tsFm, entry);
+      // Kafka global_spread_agg has: composite{value,time}, segment{direction,startTime,endTime},
+      // rocSpread{value,strongest,weakest}, stats{...}
+      // Accumulate composite points over time to build the index array
+      const compPt = parsed.composite;
+      if (compPt && compPt.value != null) {
+        if (!buffer.has(tsFm)) buffer.set(tsFm, { tsFm, tsMs, points: [], segments: [], spreadRecords: [] });
+        const entry = buffer.get(tsFm);
+        entry.points.push({ value: compPt.value, time: compPt.time || tsMs });
+        if (parsed.segment && parsed.segment.direction) {
+          entry.segments.push({
+            type: parsed.segment.direction,
+            startTime: parsed.segment.startTime,
+            endTime: parsed.segment.endTime || tsMs,
+          });
+        }
+        if (parsed.rocSpread) {
+          entry.spreadRecords.push({
+            time: tsMs,
+            value: parsed.rocSpread.value,
+            status: parsed.rocSpread.status,
+            strongest: parsed.rocSpread.strongest,
+            weakest: parsed.rocSpread.weakest,
+          });
+        }
+      }
     },
   });
 
@@ -96,14 +100,16 @@ async function main() {
     const fileName = `composite-index-${tsLabel}.json`;
     const outFile = path.join(snapDir, fileName);
 
+    // Sort points by time and build arrays
+    const sortedPoints = entry.points.sort((a, b) => a.time - b.time);
     const output = {
       generatedAt: tsLabel,
-      composite: entry.composite,
-      indexData: entry.indexData,
-      compositeIndex: entry.compositeIndex,
+      composite: sortedPoints,
+      indexData: sortedPoints,
+      compositeIndex: sortedPoints.map(p => p.value),
       spreadRecords: entry.spreadRecords,
       segments: entry.segments,
-      turnpoints: entry.turnpoints,
+      turnpoints: null,  // Not available in Kafka global_spread_agg
     };
 
     fs.writeFileSync(outFile, JSON.stringify(output, null, 2));
