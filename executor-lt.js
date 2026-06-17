@@ -1,13 +1,16 @@
 /**
- * LT 上漲轉折哨兵 — 執行引擎
+ * LT 上漲轉折哨兵 — 執行引擎（v2）
  *
- * 監控上漲趨勢是否出現結構破壞（L段→T轉折）。
+ * 前提：一致趨勢行情已確認（上漲趨勢中）
  *
- * 觸發條件（全部成立）：
- *   ① L段確認 — 上漲趨勢運行中（slope>0 + 市場看多）
- *   ② 結構破壞 — 價格多次測試同一阻力位未突破
- *   ③ SAR/斜率 — slope轉負或EMA收斂（SAR翻轉信號）
- *   ④ 板塊分歧 — 折溢價擴大（多空分歧加大）
+ * 觸發流程：
+ *   ① 前提檢查：一致趨勢行情（上漲）是否已確認
+ *   ② A1: tv-correlation 折溢價由小變大
+ *   ③ 查 ai-turn：一級板塊溢價大 + 全部市場一致
+ *   ④ 記錄當前【多頭名單】
+ *   ⑤ 追蹤：多頭名單變化（板塊方向更新）
+ *   ⑥ 檢查「上批多頭產品」形成阻力型態（V頂/M頭/平台）
+ *   ⑦ 阻力成立 → 🚨 LT 觸發
  *
  * Usage:
  *   node executor-lt.js                ← 當前時間
@@ -17,15 +20,15 @@
 
 const http = require('http');
 const fs = require('fs');
-let dataProvider = null;
-let atStr = null;  // module-level for closure
-
+const path = require('path');
 
 // ── Config ──
-const SECTOR_API = 'http://192.168.25.127:8288';
+const SIGNAL_DB = 'http://192.168.25.127:8285';
 const INDEX_SERVER = 'http://localhost:3334';
+const KLINE_SERVER = 'http://localhost:4002';
 const ROTATION_UI_PATH = '/tmp/sector-rotation-ui.json';
 const VOLUME_SURGE_PATH = '/tmp/volume-surge-segments.json';
+const TRACKING_DB_PATH = path.join(__dirname, 'tracking-state.json');
 
 const SESSIONS = [
   { id:'ASIA',   label:'亞洲時段', countries:['JP','KR','TW','AU','CN','HK','SG'], startH:8,  endH:15 },
@@ -33,6 +36,19 @@ const SESSIONS = [
   { id:'EUROPE', label:'歐洲時段', countries:['UK','FR','DE','CH','NL','ES','IT'], startH:15, endH:23.5 },
   { id:'US',     label:'美國時段', countries:['US','US_SM'], startH:21.5, endH:4 },
 ];
+const ALL_COUNTRIES = ['US','US_SM','UK','FR','DE','JP','KR','TW','CN','HK'];
+const COUNTRY_FLAGS = {
+  UK:'🇬🇧',FR:'🇫🇷',DE:'🇩🇪',US:'🇺🇸',US_SM:'🇺🇸',CN:'🇨🇳',
+  HK:'🇭🇰',JP:'🇯🇵',KR:'🇰🇷',TW:'🇹🇼',CH:'🇨🇭',NL:'🇳🇱',ES:'🇪🇸',IT:'🇮🇹',AU:'🇦🇺',SG:'🇸🇬'
+};
+const SECTOR_CN = {
+  IT:'科技',FIN:'金融',CD:'可選消費',TELECOM:'通信',IND:'工業',
+  CONS:'必需消費',MED:'醫療',ENR:'能源',CHEM:'化工',METAL:'金屬採礦'
+};
+
+// ══════════════════════════════════════════
+//  Helpers
+// ══════════════════════════════════════════
 
 function getHktTime(atStr) {
   if (atStr) { const d = new Date(atStr); return { h:d.getHours(), m:d.getMinutes(), ts:d.getTime() }; }
@@ -40,19 +56,40 @@ function getHktTime(atStr) {
   return { h:now.getUTCHours(), m:now.getUTCMinutes(), ts:now.getTime() };
 }
 
-function getActiveMarkets(hktH, hktM) {
-  const sessions = SESSIONS.filter(s => {
-    const h = hktH + hktM / 60;
+function getHktDateKey(ts) {
+  const d = new Date(ts + 8*3600000);
+  const p = n => String(n).padStart(2, '0');
+  const hr = d.getUTCHours();
+  if (hr < 5) {
+    const prev = new Date(d.getTime() - 86400000);
+    return `${prev.getUTCFullYear()}${p(prev.getUTCMonth()+1)}${p(prev.getUTCDate())}`;
+  }
+  return `${d.getUTCFullYear()}${p(d.getUTCMonth()+1)}${p(d.getUTCDate())}`;
+}
+
+function fmtHkt(ts) {
+  const d = new Date(ts + 8*3600000);
+  const p = n => String(n).padStart(2, '0');
+  return `${d.getUTCFullYear()}-${p(d.getUTCMonth()+1)}-${p(d.getUTCDate())} ${p(d.getUTCHours())}:${p(d.getUTCMinutes())}:${p(d.getUTCSeconds())}`;
+}
+
+function getActiveSessions(hktH, hktM) {
+  const h = hktH + hktM/60;
+  return SESSIONS.filter(s => {
     if (s.endH <= s.startH) return h >= s.startH || h < s.endH;
     return h >= s.startH && h < s.endH;
   });
+}
+
+function getActiveMarkets(hktH, hktM) {
+  const sessions = getActiveSessions(hktH, hktM);
   const set = new Set();
   for (const s of sessions) s.countries.forEach(c => set.add(c));
   return { sessions, markets: [...set] };
 }
 
-function httpGet(url, timeout = 5000) {
-  return new Promise((resolve, reject) => {
+function httpGet(url, timeout=5000) {
+  return new Promise((resolve) => {
     const req = http.get(url, res => {
       let b = '';
       res.on('data', c => b += c);
@@ -63,222 +100,393 @@ function httpGet(url, timeout = 5000) {
   });
 }
 
-// ── 拉取版塊折溢價數據 ──
-async function fetchRotationData(btId) {
-  if (btId) return dataProvider ? dataProvider.getRotationData(atStr, btId) : null;
+// ══════════════════════════════════════════
+//  Data Fetching
+// ══════════════════════════════════════════
+
+/**
+ * 檢查一致趨勢行情是否已確認
+ * 從 tracking-state.json 讀取
+ */
+function checkTrendConfirmed() {
   try {
-    const raw = fs.readFileSync(ROTATION_UI_PATH, 'utf8');
-    return JSON.parse(raw);
-  } catch {
-    // Fallback: pull from 8288
-    try {
-      const d = await httpGet(`${SECTOR_API}/signal/data/list?symbol=MULTI_SYMBOL_PRICE:SECTOR_GLOBAL&size=1`, 5000);
-      if (d?.results?.[0]?.ai_data?.value) return JSON.parse(d.results[0].ai_data.value);
-    } catch {}
-    return null;
-  }
-}
-
-// ── 拉取商品放量數據 ──
-async function fetchVolumeSurge(btId) {
-  if (btId) return dataProvider ? dataProvider.getVolumeSurge(atStr, btId) : null;
-  try {
-    const raw = fs.readFileSync(VOLUME_SURGE_PATH, 'utf8');
-    return JSON.parse(raw);
-  } catch { return { segments: [] }; }
-}
-
-// ── 拉取 composite index 方向 ──
-async function fetchIndexData(btId) {
-  if (btId) return dataProvider ? dataProvider.getIndexData(atStr, btId) : null;
-  try {
-    const data = await httpGet(`${INDEX_SERVER}/api/data`, 3000);
-    return data;
-  } catch { return null; }
-}
-
-// ── 計算斜率 ──
-function calcSlope(indexData, n = 10) {
-  if (!indexData?.indexData?.length) return null;
-  const points = indexData.indexData.slice(-n);
-  if (points.length < 3) return null;
-  const vals = points.map(p => typeof p === 'number' ? p : (p.value || p.close || 0));
-  const len = vals.length;
-  const sumX = len * (len - 1) / 2, sumY = vals.reduce((a, b) => a + b, 0);
-  const sumXY = vals.reduce((a, v, i) => a + i * v, 0);
-  const sumX2 = vals.reduce((a, v, i) => a + i * i, 0);
-  const slope = (len * sumXY - sumX * sumY) / (len * sumX2 - sumX * sumX);
-  return slope;
-}
-
-// ── 分析開盤市場版塊折溢價 ──
-function analyzeSectors(rotData, markets) {
-  const result = { totalUp: 0, totalDown: 0, totalMixed: 0, totalM: 0, direction: null, consistent: false, marketData: [] };
-  const countries = rotData?.COUNTRIES || rotData?.countries || {};
-  for (const m of markets) {
-    const c = countries[m];
-    if (!c || !c.sector) continue;
-    const up = c.sector.UP?.length || 0;
-    const down = c.sector.DOWN?.length || 0;
-    const total = up + down + (c.sector.MULTI?.length || 0);
-    if (total === 0) continue;
-    result.totalM++;
-    const dir = up > down ? 'up' : down > up ? 'down' : 'mixed';
-    if (dir === 'up') result.totalUp++;
-    else if (dir === 'down') result.totalDown++;
-    else result.totalMixed++;
-    result.marketData.push({
-      market: m, label: c.label || m,
-      direction: dir, upPct: total > 0 ? (up / total * 100).toFixed(0) + '%' : '0%',
-      downPct: total > 0 ? (down / total * 100).toFixed(0) + '%' : '0%',
-      sectors: c.sector,
-    });
-  }
-  result.consistent = result.totalUp > result.totalDown && result.totalUp >= result.totalM * 0.6;
-  result.direction = result.consistent ? 'up' : (result.totalDown > result.totalUp ? 'down' : null);
-  return result;
-}
-
-// ── 檢查阻力測試（個股層面）──
-async function checkResistanceTests(markets, btId, targetDate) {
-  if (btId) {
-    const resistData = dataProvider ? dataProvider.getResistanceData(targetDate, btId) : null;
-    if (!resistData) return { nearResistance: [], broken: [], totalTests: 0 };
-    const results = { nearResistance: [], broken: [], totalTests: 0 };
-    for (const [market, md] of Object.entries(resistData.data?.markets || {})) {
-      for (const s of md.stocks || []) {
-        const pct = parseFloat(s.pctToResistance);
-        if (pct > 0 && pct < 5) {
-          results.nearResistance.push({ symbol: s.tvSymbol, name: s.name, pct });
-          results.totalTests++;
-        }
-        if ((s.status || '').toLowerCase().includes('danger') || (s.status || '').includes('close')) {
-          results.broken.push({ symbol: s.tvSymbol, name: s.name, status: s.status });
-          results.totalTests++;
-        }
+    if (fs.existsSync(TRACKING_DB_PATH)) {
+      const state = JSON.parse(fs.readFileSync(TRACKING_DB_PATH, 'utf-8'));
+      if (state.conditions?.consensusTrendConfirmed && state.dateKey === getHktDateKey(Date.now())) {
+        return { confirmed: true, direction: state.conditions.direction, dateKey: state.dateKey, duration: state.durationCount || 0 };
       }
     }
-    return results;
-  }
-  const results = { nearResistance: [], broken: [], totalTests: 0 };
-  for (const market of ['america', 'china', 'hongkong', 'japan', 'korea', 'taiwan', 'uk', 'france', 'germany']) {
-    if (!markets.includes(market.slice(0,2).toUpperCase())) continue;
-    try {
-      const apiMarket = market;
-      const data = await httpGet(`http://192.168.25.190:3000/api/stock-resistance?market=${apiMarket}`, 5000);
-      const stocks = data?.data?.stocks || [];
-      for (const s of stocks) {
-        const pct = parseFloat(s.pctToResistance);
-        if (pct > 0 && pct < 5) {
-          results.nearResistance.push({ symbol: s.tvSymbol || s.yahooSymbol, name: s.name, pct: pct });
-          results.totalTests++;
-        }
-        if ((s.status || '').toLowerCase().includes('danger')) {
-          results.broken.push({ symbol: s.tvSymbol || s.yahooSymbol, name: s.name, status: s.status });
-          results.totalTests++;
-        }
+  } catch {}
+  return { confirmed: false, direction: null, dateKey: null, duration: 0 };
+}
+
+/**
+ * A1: tv-correlation 折溢價由小變大
+ * 讀 global_spread_agg，比較前後狀態變化
+ */
+async function checkSpreadGrowing() {
+  try {
+    const now = Date.now();
+    const s = encodeURIComponent(fmtHkt(now - 7200000));
+    const e = encodeURIComponent(fmtHkt(now));
+    const data = await httpGet(`${SIGNAL_DB}/signal/data/list?startTime=${s}&endTime=${e}&symbol=global_spread_agg&pageSize=5`, 4000);
+    if (!data?.results?.length) return { available: false, growing: false, message: 'tv-correlation 無數據' };
+
+    const recs = data.results.map(r => {
+      const v = JSON.parse(r.ai_data.value);
+      const sp = v.rocSpread || {};
+      return { time: r.ai_data.closeTime, status: sp.status, value: sp.value, percentile: sp.percentile };
+    }).filter(r => r.status);
+    if (recs.length < 2) return { available: true, growing: false, message: '不夠比對（<2筆）', records: recs };
+
+    recs.sort((a,b) => a.time - b.time);
+    const latest = recs[recs.length - 1];
+    const prev = recs[recs.length - 2];
+
+    // 判定由小變大: 前一個是差值小/均等，最新是差值大
+    const wasSmall = prev.status === '差值小' || prev.status === '均等';
+    const nowLarge = latest.status === '差值大';
+    const growing = wasSmall && nowLarge;
+
+    // 或看 percentile 上升趨勢
+    const pctGrowing = latest.percentile > prev.percentile && latest.percentile > 0.6;
+
+    return {
+      available: true,
+      growing: growing || pctGrowing,
+      was: prev.status,
+      now: latest.status,
+      prevPct: prev.percentile,
+      currPct: latest.percentile,
+      records: recs.slice(-3),
+      message: growing
+        ? `🔥 tv-correlation: 折溢價由小變大 (${prev.status}→${latest.status})`
+        : `➖ tv-correlation: 折溢價未明顯擴大 (${prev.status}→${latest.status})`,
+    };
+  } catch { return { available: false, growing: false, message: 'tv-correlation 讀取錯誤' }; }
+}
+
+/**
+ * A2: tv-turn 一級板塊折溢價由小變大
+ * 讀 sector API 的 SPREAD_TREND，比對前後變化
+ */
+async function checkSectorSpreadGrowing() {
+  try {
+    const now = Date.now();
+    const s = encodeURIComponent(fmtHkt(now - 3600000));
+    const e = encodeURIComponent(fmtHkt(now));
+    const data = await httpGet(`${SIGNAL_DB}/signal/data/list?symbol=asia_sector&pageSize=3&startTime=${s}&endTime=${e}`, 4000);
+    if (!data?.results?.length) return { available: false, growing: false, message: 'tv-turn 無數據' };
+
+    // Get prev and latest
+    const recs = data.results.map(r => {
+      const ms = JSON.parse(r.ai_data.value)?.MARKETS_SECTOR || {};
+      const spreads = {};
+      for (const code of Object.keys(ms)) { spreads[code] = ms[code]?.SPREAD_TREND; }
+      return { time: r.ai_data.closeTime, spreads };
+    }).filter(r => Object.values(r.spreads).some(s => s));
+    if (recs.length < 2) return { available: true, growing: false, message: '不夠比對', results: recs.map(r => r.spreads) };
+
+    recs.sort((a,b) => a.time - b.time);
+    const latest = recs[recs.length - 1];
+    const prev = recs[recs.length - 2];
+
+    // 計算由小變大的市場數
+    let growingCount = 0, totalCount = 0;
+    const details = [];
+    for (const code of Object.keys(latest.spreads)) {
+      const ls = latest.spreads[code];
+      const ps = prev.spreads[code];
+      if (!ls || !ps) continue;
+      totalCount++;
+      const wasSmall = ps === '缩小' || ps === '稳定';
+      const nowLarge = ls === '扩大';
+      const isGrowing = wasSmall && nowLarge;
+      if (isGrowing) growingCount++;
+      details.push({ market: code, flag: COUNTRY_FLAGS[code]||'', from: ps, to: ls, growing: isGrowing });
+    }
+
+    const majorityGrowing = totalCount > 0 && (growingCount / totalCount) >= 0.5;
+    return {
+      available: totalCount > 0,
+      growing: majorityGrowing,
+      growingCount, totalCount,
+      details: details.slice(0,6),
+      message: majorityGrowing
+        ? `🔥 tv-turn: ${growingCount}/${totalCount}市場折溢價擴大`
+        : `➖ tv-turn: 僅${growingCount}/${totalCount}市場擴大`,
+    };
+  } catch { return { available: false, growing: false, message: 'tv-turn 讀取錯誤' }; }
+}
+
+/**
+ * A3: 開盤四級板塊由小變大
+ * 從 rotation UI 讀四級板塊 IT 子類
+ */
+function checkSubSectorGrowing() {
+  try {
+    const data = JSON.parse(fs.readFileSync(ROTATION_UI_PATH, 'utf-8'));
+    const countries = data.countries || {};
+    let hasDivergence = false;
+    const details = [];
+
+    for (const m of ['CN','US','US_SM']) {
+      const c = countries[m];
+      if (!c?.subSectors?.IT) continue;
+      const groups = c.subSectors.IT;
+      let marketDivergent = false;
+      const dirs = {};
+
+      for (const [gk, g] of Object.entries(groups)) {
+        const sn = gk.replace(m+'_IT_','').toUpperCase();
+        const hasUp = (g.UP||[]).length > 0;
+        const hasDown = (g.DOWN||[]).length > 0;
+        const hasMulti = (g.MULTI||[]).length > 0;
+        if (hasUp && (hasDown || hasMulti)) { marketDivergent = true; hasDivergence = true; }
+        const d = hasUp ? 'UP' : (hasDown ? 'DOWN' : (hasMulti ? 'MULTI' : 'NEUTRAL'));
+        dirs[sn] = d;
       }
-    } catch {}
+
+      details.push({
+        market: m, flag: COUNTRY_FLAGS[m]||'', label: countries[m]?.label||m,
+        divergent: marketDivergent, groups: dirs,
+      });
+    }
+
+    return {
+      available: details.length > 0,
+      growing: hasDivergence,
+      details,
+      message: hasDivergence
+        ? `⚠️ 四級板塊分歧 — IT 子類方向不一`
+        : `✅ 四級板塊一致 — IT 子類同方向`,
+    };
+  } catch { return { available: false, growing: false, message: '四級板塊無數據' }; }
+}
+
+/**
+ * 多頭名單分析：從 ai-turn 讀一級板塊方向
+ */
+function analyzeLongPositions(rotData, markets) {
+  const longs = [];
+  for (const m of markets) {
+    const c = rotData?.countries?.[m];
+    if (!c?.sector) continue;
+    const up = c.sector.UP || [];
+    if (up.length > 0) {
+      longs.push({ market: m, flag: COUNTRY_FLAGS[m]||'', sectors: up });
+    }
   }
+  return longs;
+}
+
+/**
+ * 阻力檢查：用價格數據檢查上一批多頭產品是否形成阻力型態
+ */
+async function checkResistance(previousLongs) {
+  const results = { resistanceFound: false, patterns: [] };
+  if (!previousLongs?.length) return results;
+
+  // 從 volume surge 找多頭產品的價格位置
+  try {
+    const volData = JSON.parse(fs.readFileSync(VOLUME_SURGE_PATH, 'utf-8'));
+    const segments = volData.segments || [];
+    for (const entry of segments) {
+      const data = Array.isArray(entry) ? entry[1] : entry;
+      if (!data || data.status !== 'active') continue;
+      const sym = data.symbol || '';
+      const ratio = data.ratio || 0;
+      if (ratio < 1.0) continue;
+
+      // 查價格數據檢查阻力型態
+      const now = Math.floor(Date.now() / 1000);
+      const from = now - 86400; // 1d
+      const priceData = await httpGet(`${INDEX_SERVER}/api/data`, 2000);
+      if (!priceData?.indexData?.length) continue;
+
+      const bars = priceData.indexData.slice(-60); // last 60 bars
+      const highs = bars.map(b => b.value).filter(v => v != null);
+      if (highs.length < 10) continue;
+
+      // 簡單阻力檢測：最近高點附近測試次數
+      const recentHigh = Math.max(...highs);
+      const touchCount = highs.filter(v => Math.abs(v - recentHigh) / recentHigh < 0.01).length;
+      if (touchCount >= 2) {
+        results.patterns.push({ symbol: sym, ratio, resistance: parseFloat(recentHigh.toFixed(2)), touches: touchCount });
+        results.resistanceFound = true;
+      }
+    }
+  } catch {}
+
   return results;
 }
 
-// ── Main ──
+// ══════════════════════════════════════════
+//  Main
+// ══════════════════════════════════════════
+
 async function main(options = {}) {
-  atStr = options.at || null;
-  const _ignored = atStr;
-  const backtestId = options.backtestId || null;
+  const atStr = options.at || null;
   const jsonMode = options.json || false;
-  dataProvider = backtestId ? require('./backtest/data-provider') : null;
-  const log = jsonMode ? () => {} : console.log;
+  const log = jsonMode ? ()=>{} : console.log;
 
   const result = {
     timestamp: new Date().toISOString(),
     atTime: atStr || 'now',
+    dateKey: getHktDateKey(atStr ? new Date(atStr).getTime() : Date.now()),
     steps: [],
     ltTriggered: false,
-    ltReason: null,
-    ltStage: null,  // 'lt_pending' | 'lt_confirmed'
+    ltStage: 'lt_pending',
+    ltReason: '',
+    // 條件
+    prerequisiteMet: false,
+    conditionA1: null,
+    conditionA2: null,
+    conditionA3: null,
+    longPositions: [],
+    resistanceCheck: null,
+    // 名單快照（持續追蹤用）
+    snapshot: null,
   };
 
   const { h, m } = getHktTime(atStr);
   const { sessions, markets } = getActiveMarkets(h, m);
 
+  // Step 1-2: 時區
   result.steps.push({ step: 1, name: '時區檢測', status: sessions.length > 0 ? 'pass' : 'fail',
     detail: sessions.map(s => s.label).join(' + ') || '休市' });
   result.steps.push({ step: 2, name: '開盤市場', status: markets.length > 0 ? 'pass' : 'fail',
     detail: `${markets.length}市場: ${markets.join(', ')}` });
+  if (markets.length === 0) { result.ltReason = '休市'; return result; }
 
-  if (markets.length === 0) {
-    result.ltTriggered = false; result.ltReason = '休市';
+  // Step 3: 前提檢查 — 一致趨勢行情已確認
+  const trend = checkTrendConfirmed();
+  result.prerequisiteMet = trend.confirmed;
+  result.steps.push({
+    step: 3, name: '前提: 一致趨勢行情',
+    status: trend.confirmed ? 'pass' : (trend.dateKey ? 'warn' : 'fail'),
+    detail: trend.confirmed
+      ? `✅ 一致趨勢行情確認 — ${trend.direction === 'up' ? '📈上漲' : '📉下跌'} (Day ${trend.dateKey}, ${trend.duration}次追蹤)`
+      : trend.dateKey ? `⚠️ 趨勢未確認 (日期鍵=${trend.dateKey})` : '❌ 無趨勢狀態 (需先執行一致趨勢哨兵)',
+  });
+  if (!trend.confirmed) {
+    result.ltTriggered = false;
+    result.ltStage = 'lt_pending';
+    result.ltReason = '前提不滿足 — 一致趨勢行情未確認';
+    return result;
+  }
+  // 方向必須是上漲
+  if (trend.direction !== 'up') {
+    result.ltTriggered = false;
+    result.ltStage = 'lt_pending';
+    result.ltReason = '當前趨勢為下跌，LT 只監控上漲轉折';
     return result;
   }
 
-  // Step 3: 商品放量檢查
-  const rotData = await fetchRotationData(backtestId);
-  if (!rotData) {
-    result.steps.push({ step: 3, name: '商品放量+折溢價', status: 'fail', detail: '無法取得數據' });
-    result.ltTriggered = false; result.ltReason = '數據不可用';
-    return result;
-  }
-  result.steps.push({ step: 3, name: '商品放量+折溢價', status: 'pass',
-    detail: `取得 ${Object.keys(rotData.COUNTRIES || rotData.countries || {}).length} 市場數據` });
+  // Step 4: A1 — tv-correlation 折溢價由小變大
+  const spread = await checkSpreadGrowing();
+  result.conditionA1 = spread;
+  result.steps.push({
+    step: 4, name: 'A1: tv-correlation 折溢價小→大',
+    status: spread.growing ? 'warn' : (spread.available ? 'pass' : 'fail'),
+    detail: spread.message,
+  });
 
-  // Step 4: 版塊方向分析
-  const analysis = analyzeSectors(rotData, markets);
-  result.steps.push({ step: 4, name: '版塊方向', status: analysis.consistent ? 'pass' : 'warn',
-    detail: analysis.consistent
-      ? `✅ L段確認 — ${analysis.totalM}市場看多`
-      : `⚠️ 非一致上漲 (看多${analysis.totalUp}/看空${analysis.totalDown}/分歧${analysis.totalMixed})` });
+  // Step 5: A2 — tv-turn 一級板塊折溢價由小變大
+  const sectorSpread = await checkSectorSpreadGrowing();
+  result.conditionA2 = sectorSpread;
+  result.steps.push({
+    step: 5, name: 'A2: tv-turn 板塊折溢價小→大',
+    status: sectorSpread.growing ? 'warn' : (sectorSpread.available ? 'pass' : 'fail'),
+    detail: sectorSpread.message,
+    data: sectorSpread.details,
+  });
 
-  // Step 5: 阻力測試
-  const dateStr = atStr ? atStr.split(' ')[0] : '';
-  const resist = await checkResistanceTests(markets, backtestId, dateStr);
-  result.steps.push({ step: 5, name: '阻力測試', status: resist.totalTests > 5 ? 'warn' : 'pass',
-    detail: resist.totalTests > 0
-      ? `${resist.nearResistance.length}支接近阻力, ${resist.broken.length}支已觸及`
-      : '無明顯阻力測試' });
+  // Step 6: A3 — 四級板塊由小變大
+  const subSector = checkSubSectorGrowing();
+  result.conditionA3 = subSector;
+  result.steps.push({
+    step: 6, name: 'A3: 四級板塊小→大',
+    status: subSector.growing ? 'warn' : (subSector.available ? 'pass' : 'info'),
+    detail: subSector.message,
+    subSectors: subSector.details,
+  });
 
-  // Step 6: 斜率方向
-  const indexData = await fetchIndexData(backtestId);
-  const slope = calcSlope(indexData);
-  const slopeDown = slope !== null && slope < -0.1;
-  result.steps.push({ step: 6, name: '斜率方向', status: slopeDown ? 'warn' : 'pass',
-    detail: slope !== null
-      ? `📐 slope: ${slope.toFixed(4)} (${slopeDown ? '🔻轉負' : slope > 0 ? '📈正向' : '📊平緩'})`
-      : '斜率數據不足' });
+  // Step 7: 記錄多頭名單
+  let rotData = null;
+  try {
+    if (fs.existsSync(ROTATION_UI_PATH)) rotData = JSON.parse(fs.readFileSync(ROTATION_UI_PATH, 'utf-8'));
+  } catch {}
+  const longPositions = rotData ? analyzeLongPositions(rotData, markets) : [];
+  result.longPositions = longPositions;
+  result.snapshot = {
+    time: new Date().toISOString(),
+    dateKey: result.dateKey,
+    markets: [...markets],
+    longs: longPositions,
+    spreadA1: spread.message,
+    sectorA2: sectorSpread.message,
+  };
+  result.steps.push({
+    step: 7, name: '多頭名單記錄',
+    status: longPositions.length > 0 ? 'pass' : 'info',
+    detail: longPositions.length > 0
+      ? `📋 ${longPositions.length}個市場有多頭: ${longPositions.map(l => `${l.flag}${l.sectors.join(',')}`).join(' | ')}`
+      : '➖ 無明顯多頭板塊',
+    positions: longPositions,
+  });
 
-  // Step 7: 最終判定
-  const l1 = analysis.consistent;           // L段確認（看多一致）
-  const l2 = resist.totalTests > 3;          // 多次阻力測試
-  const l3 = slopeDown;                      // 斜率轉負
+  // Step 8: 阻力型態檢查
+  const resistance = await checkResistance(longPositions);
+  result.resistanceCheck = resistance;
+  result.steps.push({
+    step: 8, name: '阻力型態檢查',
+    status: resistance.resistanceFound ? 'warn' : 'pass',
+    detail: resistance.resistanceFound
+      ? `🔴 發現阻力: ${resistance.patterns.map(p => `${p.symbol}(${p.resistance},${p.touches}次)`).join(', ')}`
+      : '✅ 未發現明顯阻力型態',
+    patterns: resistance.patterns,
+  });
+
+  // Step 9: 最終判定
+  const a1Ok = spread.growing;
+  const a2Ok = sectorSpread.growing;
+  const a3Ok = subSector.growing;
+  const hasResistance = resistance.resistanceFound;
+
+  // 觸發條件：A1+A2 必要 + (A3 或 阻力成立)
+  const triggered = a1Ok && a2Ok && (a3Ok || hasResistance);
   const reasons = [];
-  if (l1) reasons.push('✅ L段看多');
-  else reasons.push('❌ 非一致上漲');
-  if (l2) reasons.push(`⚠️ 阻力測試${resist.totalTests}次`);
-  else reasons.push(`🟢 阻力測試${resist.totalTests}次`);
-  if (l3) reasons.push('🔻 斜率轉負');
-  else reasons.push(slope !== null ? '🟢 斜率未轉負' : '❓ 斜率不足');
+  if (a1Ok) reasons.push('A1折溢價擴大'); else reasons.push('A1未擴大');
+  if (a2Ok) reasons.push('A2板塊分歧'); else reasons.push('A2未分歧');
+  if (a3Ok) reasons.push('A3四級分歧'); else reasons.push('A3未分歧');
+  if (hasResistance) reasons.push('阻力成立');
 
-  const triggered = l1 && l2 && l3;
   result.ltTriggered = triggered;
   result.ltStage = triggered ? 'lt_confirmed' : 'lt_pending';
   result.ltReason = triggered
     ? `🚨 LT 上漲轉折觸發！${reasons.join(' + ')}`
     : `✅ 未觸發 (${reasons.join(', ')})`;
 
-  result.steps.push({ step: 7, name: 'LT判定', status: triggered ? 'trigger' : 'pass',
-    detail: triggered ? '🚨 LT確認 — 上漲結構破壞' : '✅ L段延續中' });
+  result.steps.push({
+    step: 9, name: 'LT判定',
+    status: triggered ? 'trigger' : 'pass',
+    detail: triggered
+      ? `🚨 上漲結構破壞 — 折溢價擴大+板塊分歧+${hasResistance?'阻力成立':'四級分歧'}`
+      : '✅ 上漲結構未破壞',
+  });
 
   if (!jsonMode) {
     log(`\n═════ LT 上漲轉折哨兵 ═════`);
     log(`時間: ${result.atTime}`);
+    log(`前提趨勢: ${trend.confirmed ? '🟢 確認' : '🔴 未確認'} (${trend.direction||'?'})`);
     log(`觸發: ${triggered ? '🚨 是' : '✅ 否'}`);
     log(`原因: ${result.ltReason}`);
     for (const s of result.steps) {
-      const icon = s.status === 'pass' ? '✅' : s.status === 'warn' ? '⚠️' : s.status === 'trigger' ? '🔴' : '❌';
-      log(`  ${icon} Step ${s.step}: ${s.name} — ${s.detail.substring(0, 60)}`);
+      const ic = { pass:'✅', warn:'⚠️', fail:'❌', trigger:'🔴', info:'💬' }[s.status] || '❓';
+      log(`  ${ic} Step ${s.step}: ${s.name} — ${(s.detail||'').substring(0,60)}`);
     }
+    if (longPositions.length) log(`📋 ${longPositions.length}個多頭市場`);
     log('════════════════════════════\n');
   }
 
@@ -287,12 +495,9 @@ async function main(options = {}) {
 
 if (require.main === module) {
   const args = process.argv.slice(2);
-  const atIndex = args.indexOf('--at');
-  const atStr = atIndex >= 0 ? args[atIndex + 1] : null;
-  const btIndex = args.indexOf('--backtest-id');
-  const btId = btIndex >= 0 ? args[btIndex + 1] : null;
-
-  main({ at: atStr, json: args.includes('--json'), backtestId: btId }).then(r => {
+  const atI = args.indexOf('--at');
+  const atStr = atI >= 0 ? args[atI + 1] : null;
+  main({ at: atStr, json: args.includes('--json') }).then(r => {
     if (args.includes('--json')) console.log(JSON.stringify(r));
   }).catch(e => console.error(e.message));
 }

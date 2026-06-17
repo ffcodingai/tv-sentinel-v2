@@ -88,38 +88,36 @@ select:focus{border-color:var(--gold)}
 </head>
 <body>
 <div class="hdr"><h1>🤖 哨兵指揮中心</h1><div class="hs"><span id="clk">--:--:--</span><span id="cnt0">0</span><span id="rotCnt">0 rotation</span><span id="ltCnt" style="color:#f97316;font-size:11px">LT:0</span><span id="stCnt" style="color:#3b82f6;font-size:11px">ST:0</span></div></div>
-<div class="c"><div class="tb" id="tabs"></div><div class="tab" id="p0"></div><div class="tab" id="p1"></div><div class="tab" id="p2"></div><div class="tab" id="p3"></div><div class="tab" id="p4"></div><div class="tab" id="p6"></div></div>
+<div class="c"><div class="tb" id="tabs"></div><div class="tab" id="p0"></div><div class="tab" id="p1"></div><div class="tab" id="p2"></div><div class="tab" id="p3"></div><div class="tab" id="p4"></div><div class="tab" id="p5"></div><div class="tab" id="p6"></div></div>
 <script>
 const A='/api';
 const RBT=[
-{ic:'🔔',nm:'一致行情轉折哨兵',tp:'check',ep:'/api/sentinels/check',
- fn:'📈上漲趨勢 → 監控上漲轉折點\n📉下跌趨勢 → 監控下跌轉折點\n\n監控條件:\n🔧技術事件(阻力/支撐/形態) 🪙大宗商品(黃金/原油)\n💱匯率(USD/CNH) 🌍地緣事件 📊金融數據(非農/CPI/利率)',
- ds:[['📈 tv-trend','一級板塊折溢價 (8288)'],['📈 tv-trend','四級板塊 IT 子類'],['🛰️ tv-intel','技術/商品/匯率/地緣/經濟事件']],
- cd:['① 一致行情 ✅ 開盤全部同方向 (≥60%)','② 折溢價擴大 ✅ 溢價群 vs 折價群 >30%','③ 子版塊分歧 ✅ IT 子類溢價/折價對立','④ 事件一致 ✅ AI intel 事件確認'],
- arch:'tv-trend→折溢價→一致?→溢價擴大?→子版塊→事件→🚨觸發\n📈向上→折溢價大→上漲轉折觸發\n📉向下→折溢價大→下跌轉折觸發'},
-{ic:'📈',nm:'一致行情趨勢管理機器人',tp:'trend',ep:'/api/sentinels/trend-check',
- fn:'📈利好事件 → 確認上漲趨勢延續\n📉利空事件 → 確認下跌趨勢延續\n\n監控條件(同第一個):\n🔧技術事件 🪙大宗商品 💱匯率\n🌍地緣事件 📊金融數據公布\n\n[待提供] 全部市場+股指期貨同向',
- ds:[['📈 tv-trend','折溢價小(一級+四級一致)'],['📈 tv-index','方向確認(3334)'],['🛰️ tv-intel','事件確認'],['⏳ 待提供','全部市場+期貨同向']],
- cd:['① 折溢價小 ✅ 一級板塊無分歧 (<0.30)','② 四級一致 ✅ IT 子類同方向','③ 方向確認 ✅ tv-index','④ 事件驅動 ✅ AI intel'],
- arch:'tv-trend→折溢價小→一致→index→事件→🟢趨勢健康\n折溢價小+方向一致+事件 = 🟢趨勢延續\n折溢價變大/分歧 = ⚠️轉弱'},
+{ic:'🔔',nm:'一致行情轉折哨兵 v2',tp:'check',ep:'/api/sentinels/check',
+ fn:'前提: 一致趨勢行情已確認（上漲或下跌）\n\n條件由小→大時觸發:\n  A1 📊 tv-correlation 折溢價 小→大\n  A2 🔄 tv-turn 一級板塊折溢價 小→大\n  A3 🔄 tv-turn 四級板塊（IT子類） 小→大\n\n🚨 全部成立 = 一致行情轉折',
+ ds:[['📊 tv-correlation','global_spread_agg 折溢價狀態'],['🔄 tv-turn','板塊 SPREAD_TREND+四級IT'],['🔥 tv-volume','商品放量異常'],['🛰️ tv-intel','事件/技術位/經濟數據']],
+ cd:['前提 ✅ 一致趨勢行情已確認','A1 ✅ tv-correlation 折溢價小→大','A2 ✅ tv-turn 一級板塊 小→大','A3 ✅ tv-turn 四級板塊 小→大'],
+ arch:'前提:趨勢確認→A1小→大 + A2小→大 + A3小→大→🚨轉折觸發\n轉折 = 一致趨勢行情的反面（由收斂轉發散）'},
+{ic:'📈',nm:'一致趨勢行情（上漲/下跌）',tp:'trend',ep:'/api/sentinels/trend-check',
+ fn:'資料皆從 agent 讀取，不自算門檻值。\n\nA1. 📊 tv-correlation 折溢價變小\n   global_spread_agg ROC差值狀態=差值小\n\nA2. 🔄 tv-turn 板塊折溢價收斂\n   各市場 SPREAD_TREND=縮小或穩定\n\nB. 🔥 商品技術共識\n   持續流動商品(金/銀/銅/油/BTC/匯率)\n   ① 一致放量 (tv-volume ratio>1.2)\n   ② 技術位突破 (MA20/50/200突破)\n\nC. 🌍 當日熱點事件\n   地緣政治 / 央行決策 / 經濟數據\n\n跨天追蹤: HKT 05:00 切割，狀態持久化',
+ ds:[['📊 tv-correlation','global_spread_agg ROC差值狀態'],['🔄 tv-turn','板塊 SPREAD_TREND'],['🔥 tv-volume','商品放量異常'],['🛰️ tv-intel','事件/技術位/經濟數據']],
+ cd:['A1 ✅ tv-correlation 折溢價變小','A2 ✅ tv-turn 板塊折溢價收斂','B 🔥 商品技術共識（放量+技術位突破）','C 🌍 當日熱點事件確認','📅 跨天追蹤（05:00切割）'],
+ arch:'tv-correlation→折溢價變小 + tv-turn→板塊收斂 + 商品技術共識 + 事件\nA1+A2 = 必要條件→B+C強化信號→🟢一致趨勢確認\n跨天追蹤→持久化狀態→持續至條件消失'},
 {ic:'🔄',nm:'板塊輪動系統',tp:'rotation',ep:'/api/sentinels/rotation-check',
  fn:'領導資金流向監控 + 各市場板塊折溢價變化\n\n驅動機制:\n🏆 領頭資產(商品/期貨/貨幣) 放量+技術共識\n→ 一致行情 → 板塊輪動在各市場間傳導\n\n物料來源:\n📈 AI TREND → 折溢價板塊 + VolTrend\n🛰️ AI INTEL → 個股事件 + 技術位 + 財報',
  ds:[['🔄 tv-rot-judge','領頭資產掃描 + 輪動階段判定'],['📈 tv-trend','板塊折溢價 + VolTrend'],['🛰️ tv-intel','事件/技術位/財報'],['⏳ FF-Mac','商品/期貨/貨幣放量 API (待整合)']],
  cd:['① 掃描全域資產(商品/期貨/貨幣/指數)','② 找放量異常+進技術共識區的領頭資產','③ 判定一致行情是否成形','④ 派出 9 個市場哨兵收集板塊反應','⑤ 綜合判定輪動階段 (CN→EU→US→CN...)'],
  arch:'tv-rot-judge→領頭資產掃描→一致行情?→派9哨兵→板塊反應→🌊輪動判定\n領頭資產放量+技術共識 = 🚀一致行情\n無領頭資產 = ⏸️無明顯輪動信號'},
-{ic:'⬇️',nm:'LT 上漲轉折哨兵',tp:'lt',ep:'/api/sentinels/lt-check',
- fn:'📉 上漲結構破壞 → 進入T轉折監控\n\n觸發條件:\n🔴 L段上漲結構破壞\n🔴 價格多次測試同一阻力位未突破\n🔴 SAR翻轉/斜率轉負/EMA收斂\n🔴 板塊折溢價擴大\n\n監控項:\n• 價格是否遠離轉折區\n• 阻力測試次數與位置\n• 折溢價變化趨勢\n\n結束條件:\n✅ 確認進入 S 段\n✅ 或重回 L 段延續\n\n輸出: LT-xxx K線段 (上漲→轉折)',
- ds:[['📈 tv-trend','板塊折溢價變化'],['🛰️ tv-intel','SAR/EMA/斜率計算'],['📐 3334','L段定位 + K線段ID']],
- cd:['① L段確認 ✅ 上漲趨勢運行中','② 結構破壞 ⚠️ 阻力測試多次','③ SAR/斜率確認 🔄 翻轉信號','④ 輸出 LT-xxx 📝 新段生成'],
- arch:'L段→阻力測試→SAR翻轉?→LT-xxx→T轉折\nL→撞牆→放量→SAR翻轉→LT確認',
- ck:'LT哨兵檢查觸發，結果待監控回報'},
-{ic:'⬆️',nm:'ST 下跌轉折哨兵',tp:'st',ep:'/api/sentinels/st-check',
- fn:'📈 下跌結構破壞 → 進入T轉折監控\n\n觸發條件:\n🟢 S段下跌結構破壞\n🟢 價格多次測試同一支撐位未跌破\n🟢 SAR翻轉/斜率轉正/EMA收斂\n🟢 板塊折溢價縮小\n\n監控項:\n• 價格是否遠離轉折區\n• 支撐測試次數與位置\n• 折溢價變化趨勢\n\n結束條件:\n✅ 確認進入 L 段\n✅ 或重回 S 段延續\n\n輸出: ST-xxx K線段 (下跌→轉折)',
- ds:[['📈 tv-trend','板塊折溢價變化'],['🛰️ tv-intel','SAR/EMA/斜率計算'],['📐 3334','S段定位 + K線段ID']],
- cd:['① S段確認 ✅ 下跌趨勢運行中','② 結構破壞 ⚠️ 支撐測試多次','③ SAR/斜率確認 🔄 翻轉信號','④ 輸出 ST-xxx 📝 新段生成'],
- arch:'S段→支撐測試→SAR翻轉?→ST-xxx→T轉折\\nS→觸底→放量→SAR翻轉→ST確認',
- ck:'ST哨兵檢查觸發，結果待監控回報'},
-{ic:'📊',nm:'儀表板',tp:'dashboard',ep:''}
+{ic:'⬇️',nm:'LT 上漲轉折哨兵 v2',tp:'lt',ep:'/api/sentinels/lt-check',
+ fn:'前提: 一致趨勢行情（上漲）已確認\n\n條件由小→大時觸發:\n  A1 📊 tv-correlation 折溢價 小→大\n  A2 🔄 tv-turn 一級板塊折溢價 小→大\n  A3 🔄 tv-turn 四級板塊 小→大\n  B  🔥 商品技術共識（放量+技術位突破）\n  C  🌍 當日熱點事件（地緣/Fed/數據）\n\n上批多頭產品→檢查阻力型態:\n  📈 V頂 / M頭 / 平台\n\n🚨 全部條件成立 = 上漲結構破壞',
+ ds:[['📊 tv-correlation','global_spread_agg 折溢價狀態'],['🔄 tv-turn','板塊 SPREAD_TREND+四級IT'],['🔥 tv-volume','商品放量異常'],['📐 3334','價格型態（阻/支撐檢測）']],
+ cd:['前提 ✅ 一致趨勢行情（上漲）','A1 ✅ tv-correlation 折溢價小→大','A2 ✅ tv-turn 一級板塊 小→大','A3 ✅ tv-turn 四級板塊 小→大','D 🔴 阻力型態（V頂/M頭/平台）'],
+ arch:'前提:趨勢確認→A1小→大 + A2小→大 + A3小→大 + 阻力型態→🚨LT觸發\nLT = 一致趨勢行情的反面',
+ ck:'LT哨兵檢查，前提需先執行一致趨勢哨兵'},
+{ic:'⬆️',nm:'ST 下跌轉折哨兵 v2',tp:'st',ep:'/api/sentinels/st-check',
+ fn:'前提: 一致趨勢行情（下跌）已確認\n\n條件由小→大時觸發（與 LT 同條件，處於下跌時觸發）:\n  A1 📊 tv-correlation 折溢價 小→大\n  A2 🔄 tv-turn 一級板塊折溢價 小→大\n  A3 🔄 tv-turn 四級板塊 小→大\n  B  🔥 商品技術共識（放量+技術位突破）\n  C  🌍 當日熱點事件（地緣/Fed/數據）\n\n上批空頭產品→檢查支撐型態:\n  📉 V底 / A底 / W底 / 平台\n\n🚨 全部條件成立 = 下跌結構破壞',
+ ds:[['📊 tv-correlation','global_spread_agg 折溢價狀態'],['🔄 tv-turn','板塊 SPREAD_TREND+四級IT'],['🔥 tv-volume','商品放量異常'],['📐 3334','價格型態（阻/支撐檢測）']],
+ cd:['前提 ✅ 一致趨勢行情（下跌）','A1 ✅ tv-correlation 折溢價小→大','A2 ✅ tv-turn 一級板塊 小→大','A3 ✅ tv-turn 四級板塊 小→大','D 🟢 支撐型態（V底/A底/W底）'],
+ arch:'前提:趨勢確認→A1小→大 + A2小→大 + A3小→大 + 支撐型態→🚨ST觸發\nST = LT 反面，下跌時觸發'},
 ];
 
 // ─── Tab 2 (Rotation) Data ───

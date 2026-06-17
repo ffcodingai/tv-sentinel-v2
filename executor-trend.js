@@ -1,16 +1,15 @@
 /**
- * 一致行情趨勢管理機器人 — 執行引擎
+ * 一致趨勢行情（上漲 / 下跌）— 執行引擎（v2）
  *
- * 雙向趨勢管理：
- *   利好事件 → 確認上漲趨勢延續
- *   利空事件 → 確認下跌趨勢延續
+ * 資料皆從 agent 讀取，不自算門檻值。
  *
  * 條件：
- *   ① 🔥 商品放量（金銀/原油/BTC/ETH/匯率）
- *   ② 🌍 全球市場一致（10國，含收盤VOL_TREND）
- *   ③ 折溢價小（一級+四級板塊一致無分歧）
- *   ④ 📐 composite slope 方向確認
- *   ⑤ AI intel 事件確認
+ *   A1. tv-correlation → 折溢價變小（global_spread_agg status=差值小）
+ *   A2. tv-turn → 板塊折溢價關係變小（SPREAD_TREND=縮小/穩定）
+ *   B.  商品技術共識 — 持續流動商品(金/銀/銅/油/BTC/匯率) 一致放量+技術位突破
+ *   C.  當日熱點事件 — 地緣/Fed/經濟數據
+ *
+ * 跨天追蹤：HKT 05:00 切割，狀態持久化。
  *
  * Usage:
  *   node executor-trend.js                ← 當前時間
@@ -20,55 +19,22 @@
 
 const http = require('http');
 const fs = require('fs');
+const path = require('path');
 
-// ── 物料 (Data Sources) — 趨勢管理專用 ──
-// 趨勢管理需要商品放量 + 全球市場一致 (含收盤市場 VOL_TREND)
-//
-// ① 商品放量 — 金AU0/銀AG0/油IG:LCO,SC0,CL/BTC/ETH/匯率SD_IDX:*
-//    來源: /tmp/volume-surge-segments.json
-//    門檻: ratio > 1.2 且 status=active
-//
-// ② 全球市場 — 開盤+收盤市場必須方向一致
-//    - 開盤市場: sector rotation UP/DOWN (當前折溢價分佈)
-//    - 收盤市場: VOL_TREND valid_trend + 驗證產品方向
-//    - 驗證產品: IT→CFDGOLD/CFDSILVER, FIN→USDX_FX/CNH_FX, IND→LCO, CD→BTC/ETH
-//    - 要求: 全部 10 國 (US,US_SM,UK,FR,DE,JP,KR,TW,CN,HK) 折溢價小且方向一致
-//
-// ③ tv-index → composite slope 方向確認
-//    來源: http://localhost:3334/api/data (composite)
-//    用途: slope(最後10點斜率)判趨勢健康
-//
-// ④ tv-intel → 事件管理 (待接入)
-//    來源: FF-Mac 3000/api/news + tech-events-report
-//    用途: 確認利好/利空事件與趨勢方向一致
-//
-// ── 觸發條件 (Trend Health = all true) ──
-// 趨勢健康判定:
-//   1. 🔥 商品放量: 金/銀/原油/BTC/ETH/匯率 中任一 ratio > 1.2
-//   2. 🌍 全球一致: 全部 10 國市場折溢價小且同方向
-//   3. 🟢 折溢價小: 開盤市場 spread <= 0.30
-//   4. ✅ 四級一致: IT 子類無溢價/折價對立
-//   5. 📊 composite slope: 斜率>0=上漲延續, <0=下跌延續
-//
-// 雙向管理:
-//   - 上漲趨勢: 商品放量↑ + 全球看多 + 折溢價小 + slope↑
-//   - 下跌趨勢: 商品放量↓ + 全球看空 + 折溢價小 + slope↓
-//
-// ── Config ──
-let dataProvider = null;
-let atStr = null;  // module-level for closure
-
-const SECTOR_API = 'http://192.168.25.127:8288';
+// ── 數據源 ──
+const SIGNAL_DB = 'http://192.168.25.127:8285';
 const INDEX_SERVER = 'http://localhost:3334';
+const KLINE_SERVER = 'http://localhost:4002';
 const ROTATION_UI_PATH = '/tmp/sector-rotation-ui.json';
 const VOLUME_SURGE_PATH = '/tmp/volume-surge-segments.json';
-const VOLUME_THRESHOLD = 1.2;
+const TRACKING_DB_PATH = path.join(__dirname, 'tracking-state.json');
 
-const VOLUME_TARGETS = {
-  precious_metals: { label:'貴金屬', symbols: ['AU0','AG0','IG:CFDGOLD','IG:CFDSILVER'] },
-  crude_oil:       { label:'原油期貨', symbols: ['SC0','IG:LCO','IG:CL'] },
-  crypto:          { label:'Crypto', symbols: ['BTC','ETH'] },
-  forex:           { label:'匯率', symbols: ['SD_IDX:'] },
+// ── 持續流動商品清單 ──
+const LIQUID_COMMODITIES = {
+  precious_metals: { label:'貴金屬', symbols: ['IG:CFDGOLD','IG:CFDSILVER','IG:COPPER'] },
+  crude_oil:       { label:'原油',   symbols: ['IG:CL','IG:LCO','IG:SC0'] },
+  crypto:          { label:'Crypto', symbols: ['BTC_SPOT','ETH_SPOT','SOL_SPOT'] },
+  forex:           { label:'匯率',   symbols: ['CNH_FX','JPY_FX','AUD_FX','EUR_FX','GBP_FX','CHF_FX','CAD_FX'] },
 };
 
 const SESSIONS = [
@@ -77,15 +43,8 @@ const SESSIONS = [
   { id:'EUROPE', label:'歐洲時段', countries:['UK','FR','DE','CH','NL','ES','IT'], startH:15, endH:23.5 },
   { id:'US',     label:'美國時段', countries:['US','US_SM'], startH:21.5, endH:4 },
 ];
-
-const SECTOR_CN = {
-  IT:'科技',FIN:'金融',CD:'可選消費',TELECOM:'通信',IND:'工業',
-  CONS:'必需消費',MED:'醫療',ENR:'能源',CHEM:'化工',METAL:'金屬採礦'
-};
-const COUNTRY_FLAGS = {
-  UK:'🇬🇧',FR:'🇫🇷',DE:'🇩🇪',US:'🇺🇸',US_SM:'🇺🇸',CN:'🇨🇳',
-  HK:'🇭🇰',JP:'🇯🇵',KR:'🇰🇷',TW:'🇹🇼',CH:'🇨🇭',NL:'🇳🇱',ES:'🇪🇸',IT:'🇮🇹',AU:'🇦🇺',SG:'🇸🇬'
-};
+const ALL_COUNTRIES = ['US','US_SM','UK','FR','DE','JP','KR','TW','CN','HK'];
+const COUNTRY_FLAGS = { UK:'🇬🇧',FR:'🇫🇷',DE:'🇩🇪',US:'🇺🇸',US_SM:'🇺🇸',CN:'🇨🇳',HK:'🇭🇰',JP:'🇯🇵',KR:'🇰🇷',TW:'🇹🇼',AU:'🇦🇺',SG:'🇸🇬' };
 
 function getHktTime(atStr) {
   if (atStr) { const d = new Date(atStr); return { h:d.getHours(), m:d.getMinutes(), ts:d.getTime() }; }
@@ -93,467 +52,343 @@ function getHktTime(atStr) {
   return { h:now.getUTCHours(), m:now.getUTCMinutes(), ts:now.getTime() };
 }
 
+function getHktDateKey(ts) {
+  const d = new Date(ts + 8*3600000);
+  const p = n => String(n).padStart(2, '0');
+  const hr = d.getUTCHours();
+  if (hr < 5) { const prev = new Date(d.getTime() - 86400000); return `${prev.getUTCFullYear()}${p(prev.getUTCMonth()+1)}${p(prev.getUTCDate())}`; }
+  return `${d.getUTCFullYear()}${p(d.getUTCMonth()+1)}${p(d.getUTCDate())}`;
+}
+
+function fmtHkt(ts) {
+  const d = new Date(ts + 8*3600000);
+  const p = n => String(n).padStart(2, '0');
+  return `${d.getUTCFullYear()}-${p(d.getUTCMonth()+1)}-${p(d.getUTCDate())} ${p(d.getUTCHours())}:${p(d.getUTCMinutes())}:${p(d.getUTCSeconds())}`;
+}
+
+function fmtHktShort(ts) {
+  const d = new Date(ts + 8*3600000);
+  return `${String(d.getUTCHours()).padStart(2,'0')}:${String(d.getUTCMinutes()).padStart(2,'0')}`;
+}
+
 function getActiveSessions(hktH, hktM) {
   const h = hktH + hktM/60;
-  return SESSIONS.filter(s => {
-    if (s.endH <= s.startH) return h >= s.startH || h < s.endH;
-    return h >= s.startH && h < s.endH;
-  });
+  return SESSIONS.filter(s => { if (s.endH <= s.startH) return h >= s.startH || h < s.endH; return h >= s.startH && h < s.endH; });
 }
 
 function getActiveMarkets(hktH, hktM) {
   const sessions = getActiveSessions(hktH, hktM);
-  const set = new Set();
-  for (const s of sessions) s.countries.forEach(c => set.add(c));
-  return { sessions, markets: [...set] };
+  return { sessions, markets: [...new Set(sessions.flatMap(s => s.countries))] };
 }
 
-function httpGet(url, timeout=5000) {
-  return new Promise((resolve, reject) => {
+function httpGet(url, timeout = 6000) {
+  return new Promise((resolve) => {
     const req = http.get(url, res => {
-      let body = '';
-      res.on('data', c => body += c);
-      res.on('end', () => { try { resolve(JSON.parse(body)); } catch(e) { reject(e); } });
+      let b = '';
+      res.on('data', c => b += c);
+      res.on('end', () => { try { resolve(JSON.parse(b)); } catch(e) { resolve(null); } });
     });
-    req.on('error', reject);
-    req.setTimeout(timeout, () => { req.destroy(); reject(new Error('Timeout')); });
+    req.on('error', () => resolve(null));
+    req.setTimeout(timeout, () => { req.destroy(); resolve(null); });
   });
 }
 
-async function fetchRotationData(btId) {
-  if (btId) return dataProvider ? dataProvider.getRotationData(atStr, btId) : null;
-  try { if (fs.existsSync(ROTATION_UI_PATH)) return JSON.parse(fs.readFileSync(ROTATION_UI_PATH, 'utf-8')); } catch {}
-  const list = ['asia_sector','china_sector','europe_sector','us_sector'];
-  for (const m of list) {
-    try { const d = await httpGet(`${SECTOR_API}/signal/data/list?symbol=${m}&size=1`); if (d?.results?.[0]?.ai_data?.value) return JSON.parse(d.results[0].ai_data.value); } catch {}
-  }
-  return null;
+// ── 跨天追蹤 ──
+function loadTrackingState() {
+  try {
+    if (fs.existsSync(TRACKING_DB_PATH)) return JSON.parse(fs.readFileSync(TRACKING_DB_PATH, 'utf-8'));
+  } catch {}
+  return { dateKey: null, conditions: {}, durationCount: 0 };
 }
 
-// ── Fetch Volume Surge ──
-async function fetchVolumeSurge(btId) {
-  if (btId) return dataProvider ? dataProvider.getVolumeSurge(atStr, btId) : null;
+function saveTrackingState(state) {
+  try { fs.writeFileSync(TRACKING_DB_PATH, JSON.stringify(state, null, 2), 'utf-8'); } catch {}
+}
+
+// ══════════════════════════════════════════
+//  Data Fetching
+// ══════════════════════════════════════════
+
+/**
+ * A1: tv-correlation — 讀 global_spread_agg 折溢價狀態
+ * 取最近幾筆，看是否折溢價變小（差值小 或 從大→小）
+ */
+async function fetchSpreadTrend() {
+  try {
+    const now = Date.now();
+    const s = encodeURIComponent(fmtHkt(now - 7200000));
+    const e = encodeURIComponent(fmtHkt(now));
+    const data = await httpGet(`${SIGNAL_DB}/signal/data/list?startTime=${s}&endTime=${e}&symbol=global_spread_agg&pageSize=5`, 5000);
+    if (!data?.results?.length) return { available: false, message: 'tv-correlation 無數據' };
+
+    const recs = data.results.map(r => {
+      const v = JSON.parse(r.ai_data.value);
+      const sp = v.rocSpread || {};
+      return { time: r.ai_data.closeTime, status: sp.status, value: sp.value, percentile: sp.percentile, strongest: sp.strongest, weakest: sp.weakest };
+    }).filter(r => r.status);
+    if (recs.length < 2) return { available: true, small: false, message: '不夠比對（<2筆）', records: recs };
+
+    recs.sort((a,b) => a.time - b.time);
+    const latest = recs[recs.length - 1];
+    const prev = recs[recs.length - 2];
+
+    // 判定折溢價變小: 最新狀態=差值小 或 從大→小
+    const isSmall = latest.status === '差值小';
+    const transitioning = prev?.status === '差值大' && latest.status !== '差值大';
+    const small = isSmall || transitioning;
+
+    return {
+      available: true, small, status: latest.status, value: latest.value, percentile: latest.percentile,
+      transition: transitioning ? `${prev.status}→${latest.status}` : null,
+      records: recs.slice(-3),
+      strongest: latest.strongest, weakest: latest.weakest,
+      message: small
+        ? `✅ tv-correlation: 折溢價變小 (${latest.status})`
+        : `⚠️ tv-correlation: 折溢價仍大 (${latest.status})`,
+    };
+  } catch { return { available: false, message: 'tv-correlation 讀取錯誤' }; }
+}
+
+/**
+ * A2: tv-turn — 讀 sector SPREAD_TREND 是否收斂
+ */
+async function fetchSectorSpread() {
+  try {
+    const now = Date.now();
+    const s = encodeURIComponent(fmtHkt(now - 3600000));
+    const e = encodeURIComponent(fmtHkt(now));
+    const symbols = ['asia_sector','china_sector','europe_sector','us_sector'];
+    const allResults = [];
+
+    for (const sym of symbols) {
+      const data = await httpGet(`${SIGNAL_DB}/signal/data/list?symbol=${sym}&pageSize=1&startTime=${s}&endTime=${e}`, 4000);
+      if (!data?.results?.length) continue;
+      const ms = JSON.parse(data.results[0].ai_data.value)?.MARKETS_SECTOR || {};
+      for (const code of Object.keys(ms)) {
+        const st = ms[code]?.SPREAD_TREND;
+        if (st) allResults.push({ market: code, flag: COUNTRY_FLAGS[code]||'', spreadTrend: st });
+      }
+    }
+
+    if (!allResults.length) return { available: false, message: 'tv-turn 暫無板塊折溢價數據' };
+
+    const smallCount = allResults.filter(r => r.spreadTrend === '缩小' || r.spreadTrend === '稳定').length;
+    const allSmall = smallCount === allResults.length;
+    const majoritySmall = (smallCount / allResults.length) >= 0.6;
+
+    return {
+      available: true, small: majoritySmall, allSmall, smallCount, totalCount: allResults.length,
+      results: allResults,
+      message: allSmall
+        ? `✅ tv-turn: 全部板塊折溢價收斂 (${allResults.length}市場)`
+        : majoritySmall
+          ? `✅ tv-turn: ${smallCount}/${allResults.length}市場收斂`
+          : `⚠️ tv-turn: 僅${smallCount}/${allResults.length}市場收斂`,
+    };
+  } catch { return { available: false, message: 'tv-turn 讀取錯誤' }; }
+}
+
+/**
+ * B: 商品技術共識 — 放量 + MA 突破
+ */
+async function fetchCommodityConsensus() {
+  const result = { available: false, volumeSurge: [], technicalBreakouts: [], consensusReached: false, message: '' };
+
   try {
     if (fs.existsSync(VOLUME_SURGE_PATH)) {
-      const raw = fs.readFileSync(VOLUME_SURGE_PATH, 'utf-8');
-      return JSON.parse(raw);
-    }
-  } catch {}
-  return null;
-}
-
-function checkVolumeSurge(volData) {
-  const segments = volData?.segments || [];
-  const matched = [];
-  for (const entry of segments) {
-    const data = Array.isArray(entry) ? entry[1] : entry;
-    if (!data || data.status !== 'active') continue;
-    const sym = data.symbol || '';
-    const ratio = data.ratio || 0;
-    if (ratio < VOLUME_THRESHOLD) continue;
-    for (const [catKey, cat] of Object.entries(VOLUME_TARGETS)) {
-      if (cat.symbols.some(s => sym === s || sym.startsWith(s))) {
-        matched.push({ symbol: sym, category: cat.label, ratio, hourKey: data.hourKey || '', catKey });
-        break;
-      }
-    }
-  }
-  const hasSurge = matched.length > 0;
-  return {
-    hasSurge, matched,
-    message: hasSurge
-      ? `🔥 放量確認: ${matched.map(m => `${m.symbol}(${m.ratio}x,${m.category})`).join(', ')}`
-      : '✅ 無相關放量（金/銀/油/BTC/ETH/匯率均無放量）',
-  };
-}
-
-async function fetchIndexDirection(btId) {
-  if (btId) {
-    try {
-      const idxData = dataProvider ? dataProvider.getIndexData(atStr, btId) : null;
-      if (!idxData) return { available: false, direction: null, message: '回測無 index 數據' };
-      const composite = idxData.composite || [];
-      if (Array.isArray(composite) && composite.length >= 3) {
-        const len = composite.length;
-        const last = composite[len-1]?.value;
-        const prev = composite[len-3]?.value;
-        if (last != null && prev != null) {
-          const dir = last >= prev ? 'up' : 'down';
-          return { available: true, direction: dir, lastValue: last, prevValue: prev,
-            message: `📊 tv-index 方向: ${dir === 'up' ? '📈上漲' : '📉下跌'} (${prev}→${last})` };
-        }
-      }
-      return { available: true, direction: null, message: 'tv-index 數據不足判斷方向' };
-    } catch { return { available: false, direction: null, message: '回測 index 錯誤' }; }
-  }
-  try {
-    const data = await httpGet(`${INDEX_SERVER}/api/data`, 3000);
-    if (!data) return { available: false, direction: null, message: 'tv-index 無回應' };
-    const composite = data.composite;
-    if (Array.isArray(composite) && composite.length >= 3) {
-      const len = composite.length;
-      const last = composite[len-1]?.value;
-      const prev = composite[len-3]?.value;
-      if (last != null && prev != null) {
-        const dir = last >= prev ? 'up' : 'down';
-        return { available: true, direction: dir, lastValue: last, prevValue: prev,
-          message: `📊 tv-index 方向: ${dir === 'up' ? '📈上漲' : '📉下跌'} (${prev}→${last})` };
-      }
-    }
-    return { available: true, direction: null, message: 'tv-index 數據不足判斷方向' };
-  } catch {
-    return { available: false, direction: null, message: 'tv-index 連線失敗' };
-  }
-}
-
-async function fetchIndexData(btId) {
-  if (btId) return dataProvider ? dataProvider.getIndexData(atStr, btId) : null;
-  try {
-    const data = await httpGet(`${INDEX_SERVER}/turnpoints.json`, 3000);
-    return data;
-  } catch {}
-  try {
-    const data = await httpGet(`${INDEX_SERVER}/api/data`, 3000);
-    return data;
-  } catch {}
-  return null;
-}
-
-// ── Step 3: Check SMALL premium/discount ──
-function checkPremiumSmall(rotData, markets) {
-  let pSum=0, pC=0, dSum=0, dC=0, totalM=0;
-  const details = [];
-
-  for (const m of markets) {
-    const c = rotData.countries?.[m];
-    if (!c?.sector) continue;
-
-    const s = c.sector;
-    const up = s.UP||[], down = s.DOWN||[], multi = s.MULTI||[], neut = s.NEUTRAL||[];
-    const total = up.length + down.length + multi.length + neut.length;
-    if (total === 0) continue;
-    totalM++;
-
-    const upPct = up.length/total;
-    const downPct = down.length/total;
-    const upDir = upPct >= 0.6;
-    const downDir = downPct >= 0.6;
-    const direction = upDir ? 'up' : (downDir ? 'down' : 'mixed');
-
-    pSum += upPct; pC++;
-    dSum += downPct; dC++;
-
-    details.push({
-      market: m, label: c.label||m, flag: COUNTRY_FLAGS[m]||'',
-      direction, upPct:(upPct*100).toFixed(0)+'%', downPct:(downPct*100).toFixed(0)+'%',
-      sectors: { up: up.map(x=>SECTOR_CN[x]||x), down: down.map(x=>SECTOR_CN[x]||x), multi: multi.map(x=>SECTOR_CN[x]||x) }
-    });
-  }
-
-  const avgP = pC>0 ? pSum/pC : 0;
-  const avgD = dC>0 ? dSum/dC : 0;
-  const spread = Math.abs(avgP - avgD);
-  const small = spread <= 0.30; // 折溢價小
-
-  // Direction consensus among all markets
-  const allUp = details.length > 0 && details.every(d => d.direction === 'up');
-  const allDown = details.length > 0 && details.every(d => d.direction === 'down');
-  const consensus = allUp || allDown;
-  const consensusDir = allUp ? 'up' : 'down';
-
-  return {
-    small, spread: parseFloat(spread.toFixed(3)),
-    consensus, consensusDir: consensusDir,
-    marketCount: totalM, details,
-    message: small
-      ? `✅ 折溢價小 (${spread.toFixed(2)}) — 市場一致無分歧`
-      : `⚠️ 折溢價偏大 (${spread.toFixed(2)}) — 板塊開始分歧`,
-  };
-}
-
-// ── Step 4: Check sub-sector consensus (小 = no divergence) ──
-function checkSubSectorConsensus(rotData) {
-  const details = [];
-  let allConsistent = true;
-
-  for (const m of ['CN','US','US_SM']) {
-    const c = rotData.countries?.[m];
-    if (!c?.subSectors?.IT) continue;
-    const groups = {};
-    for (const [gk, g] of Object.entries(c.subSectors.IT)) {
-      const sn = gk.replace(m+'_IT_','').toUpperCase();
-      const dirs = {};
-      for (const d of ['UP','DOWN','MULTI','NEUTRAL']) {
-        const items = g[d]||[];
-        if (items.length > 0) dirs[d] = items.map(i => i.split('_').pop());
-      }
-      const keys = Object.keys(dirs);
-      if (keys.length > 1) allConsistent = false;
-      groups[sn] = dirs;
-    }
-    details.push({ market:m, label: rotData.countries[m]?.label||m, flag:COUNTRY_FLAGS[m]||'', groups });
-  }
-
-  return { allConsistent, details, message: allConsistent ? '✅ 四級板塊一致' : '⚠️ 四級板塊出現分歧' };
-}
-
-// ── Step 5: Check index direction ──
-async function checkIndexDirection(rotData, markets) {
-  try {
-    const idx = await fetchIndexData(backtestId);
-    if (!idx) return { available: false, message: '⚠️ tv-index 數據不可用', direction: null };
-    return { available: true, message: `✅ tv-index 方向確認可用`, direction: 'detected', data: idx };
-  } catch {
-    return { available: false, message: '⚠️ tv-index 連線失敗', direction: null };
-  }
-}
-
-// ── Step 6: Volatility check (big move in products) ──
-function checkVolatility(rotData, markets) {
-  let hasVolatility = false;
-  const volatileItems = [];
-
-  // Collapse UP/DOWN products into a single list
-  function collectProducts(obj) {
-    const items = [];
-    if (!obj || typeof obj !== 'object') return items;
-    for (const key of ['UP','DOWN','MULTI']) {
-      const arr = obj[key];
-      if (Array.isArray(arr)) {
-        for (const item of arr) {
-          if (typeof item === 'string') items.push(item);
-          else if (typeof item === 'object' && item !== null) items.push(item);
+      const volData = JSON.parse(fs.readFileSync(VOLUME_SURGE_PATH, 'utf-8'));
+      for (const entry of (volData.segments || [])) {
+        const d = Array.isArray(entry) ? entry[1] : entry;
+        if (!d || d.status !== 'active') continue;
+        const sym = d.symbol || '';
+        const ratio = d.ratio || 0;
+        if (ratio < 1.2) continue;
+        for (const cat of Object.values(LIQUID_COMMODITIES)) {
+          if (cat.symbols.some(s => sym.includes(s) || s.includes(sym))) {
+            result.volumeSurge.push({ symbol: sym, category: cat.label, ratio, hourKey: d.hourKey || '' });
+            break;
+          }
         }
       }
     }
-    return items;
-  }
+  } catch {}
 
-  for (const m of markets) {
-    const c = rotData.countries?.[m];
-    if (!c?.correlatedProducts) continue;
-    const products = collectProducts(c.correlatedProducts);
-    // If we see sector data with strong direction differences, flag volatility
-    if (products.length > 0) {
-      hasVolatility = true;
-      volatileItems.push({ market: m, products: products.slice(0,3) });
+  try {
+    const now = Math.floor(Date.now() / 1000);
+    const from = now - 86400 * 250;
+    const allSyms = Object.values(LIQUID_COMMODITIES).flatMap(c => c.symbols);
+    const queries = allSyms.map(sym =>
+      httpGet(`${KLINE_SERVER}/history?symbol=${sym}&resolution=D&from=${from}&to=${now}`, 4000)
+        .then(data => ({ sym, data })).catch(() => ({ sym, data: null }))
+    );
+    const responses = await Promise.all(queries);
+    for (const { sym, data } of responses) {
+      if (!data?.c?.length || data.c.length < 30) continue;
+      const closes = data.c.filter(v => v != null);
+      if (closes.length < 20) continue;
+      const last = closes[closes.length - 1];
+      if (!last) continue;
+      const ma20 = closes.slice(-20).reduce((a,b)=>a+b,0) / 20;
+      const ma50 = closes.length >= 50 ? closes.slice(-50).reduce((a,b)=>a+b,0) / 50 : null;
+      const ma200 = closes.length >= 200 ? closes.slice(-200).reduce((a,b)=>a+b,0) / 200 : null;
+      const breaks = [];
+      if (last > ma20 * 1.02) breaks.push(`MA20(${ma20.toFixed(1)})`);
+      if (ma50 && last > ma50 * 1.02) breaks.push(`MA50(${ma50.toFixed(1)})`);
+      if (ma200 && last > ma200 * 1.02) breaks.push(`MA200(${ma200.toFixed(1)})`);
+      if (breaks.length) result.technicalBreakouts.push({ symbol: sym, lastPrice: parseFloat(last.toFixed(2)), breakLevels: breaks });
     }
-  }
+  } catch {}
 
-  return {
-    detected: hasVolatility,
-    items: volatileItems,
-    message: hasVolatility
-      ? `⚠️ 相關產品波動: ${volatileItems.map(i=>i.market).join(', ')}`
-      : '✅ 波幅正常（待接入產品API）'
-  };
+  result.consensusReached = result.volumeSurge.length >= 2 && result.technicalBreakouts.length >= 1;
+  result.available = result.volumeSurge.length > 0 || result.technicalBreakouts.length > 0;
+  const v = result.volumeSurge.map(x => `${x.symbol}(${x.ratio}x)`).join(', ');
+  const t = result.technicalBreakouts.map(x => `${x.symbol}突破${x.breakLevels.join(',')}`).join(', ');
+  result.message = result.consensusReached ? `🔥 商品技術共識 — 放量:${v} | 突破:${t}` : result.volumeSurge.length ? `⚠️ 僅放量無突破: ${v}` : '➖ 無明顯共識';
+  return result;
 }
 
-// ── Slope calculation ──
-function calcSlope(indexData, n = 10) {
-  if (!indexData || indexData.length < n) return null;
-  const slice = indexData.slice(-n);
-  const xMean = (n - 1) / 2;
-  const yMean = slice.reduce((s, p) => s + p.value, 0) / n;
-  let num = 0, den = 0;
-  for (let i = 0; i < n; i++) {
-    num += (i - xMean) * (slice[i].value - yMean);
-    den += (i - xMean) ** 2;
-  }
-  return den ? num / den : 0;
+/**
+ * C: 當日熱點事件
+ */
+async function fetchHotEvents() {
+  const r = { available: false, events: [], hasCritical: false, message: '' };
+  try {
+    const data = await httpGet('http://192.168.25.190:3000/api/news?limit=5', 4000);
+    if (data?.events?.length) r.events = data.events.map(e => ({ title: e.title||e.name||'', type: e.type||e.category||'general', severity: e.severity||'info' }));
+    r.hasCritical = r.events.some(e => /fed|利率|地缘|战争|制裁|cpi|非农|央行/i.test(e.title));
+    r.available = r.events.length > 0;
+    r.message = r.hasCritical ? `🔥 關鍵事件: ${r.events.filter(e=>/fed|利率|地缘|战争/i.test(e.title)).map(e=>e.title).join(', ')}` : r.available ? `📋 ${r.events.length}條事件` : '➖ 暫無事件數據';
+  } catch { r.message = '➖ 事件 API 不可用'; }
+  return r;
 }
 
-// ── 全球市場一致 (10國) ──
-const ALL_COUNTRIES = ['US','US_SM','UK','FR','DE','JP','KR','TW','CN','HK'];
-
+/**
+ * 全球市場一致（10國）
+ */
 function analyzeAllMarkets(rotData) {
   const results = [];
-  let totalUp = 0, totalDown = 0, mixed = 0;
+  let up=0, down=0, mix=0;
   for (const m of ALL_COUNTRIES) {
-    const c = rotData.countries?.[m];
+    const c = rotData?.countries?.[m];
     if (!c) continue;
-    let direction;
+    let dir;
     if (c.status === 'open' && c.sector) {
       const s = c.sector;
-      const up = s.UP || [], down = s.DOWN || [], multi = s.MULTI || [], neut = s.NEUTRAL || [];
-      const total = up.length + down.length + multi.length + neut.length;
-      if (total === 0) direction = 'neutral';
-      else {
-        const upPct = up.length / total;
-        const downPct = down.length / total;
-        if (upPct >= 0.6) { direction = 'up'; totalUp++; }
-        else if (downPct >= 0.6) { direction = 'down'; totalDown++; }
-        else { direction = 'mixed'; mixed++; }
-      }
+      const u = (s.UP||[]).length, d = (s.DOWN||[]).length, tot = u + d + (s.MULTI||[]).length + (s.NEUTRAL||[]).length;
+      if (!tot) dir = 'neutral';
+      else if (u/tot >= 0.6) { dir='up'; up++; }
+      else if (d/tot >= 0.6) { dir='down'; down++; }
+      else { dir='mixed'; mix++; }
     } else if (c.VOL_TREND) {
-      let upCount = 0, downCount = 0, totalCount = 0;
-      for (const vt of Object.values(c.VOL_TREND)) {
-        if (vt.valid_trend === 'VALID_UP') { upCount++; totalCount++; }
-        else if (vt.valid_trend === 'VALID_DOWN') { downCount++; totalCount++; }
-      }
-      if (totalCount === 0) direction = 'neutral';
-      else {
-        const upPct = upCount / totalCount;
-        const downPct = downCount / totalCount;
-        if (upPct >= 0.6) { direction = 'up'; totalUp++; }
-        else if (downPct >= 0.6) { direction = 'down'; totalDown++; }
-        else { direction = 'mixed'; mixed++; }
-      }
-    } else direction = 'neutral';
-    results.push({ market: m, label: c.label||m, flag: COUNTRY_FLAGS[m]||'', status: c.status||'unknown', direction });
+      let u2=0, d2=0, t2=0;
+      for (const vt of Object.values(c.VOL_TREND)) { if (vt.valid_trend==='VALID_UP') u2++; else if (vt.valid_trend==='VALID_DOWN') d2++; t2++; }
+      dir = !t2 ? 'neutral' : u2/t2>=0.6 ? (up++,'up') : d2/t2>=0.6 ? (down++,'down') : (mix++,'mixed');
+    } else dir='neutral';
+    results.push({ market: m, label: c.label||m, flag: COUNTRY_FLAGS[m]||'', status: c.status||'unknown', direction: dir });
   }
-  const totalM = results.length;
-  const consistent = totalM > 0 && (totalUp === totalM || totalDown === totalM);
-  const globalDir = totalUp > totalDown ? 'up' : 'down';
-  return {
-    results, consistent, globalDir, totalUp, totalDown, mixed, totalM,
-    message: consistent
-      ? `🌍 全球一致 ${globalDir === 'up' ? '📈看多' : '📉看空'} (${totalUp}看多/${totalDown}看空/${mixed}分歧, ${totalM}國)`
-      : `⚠️ 全球分歧 (${totalUp}看多/${totalDown}看空/${mixed}分歧, ${totalM}國)`
-  };
+  const tot = results.length;
+  const consistent = tot > 0 && (up === tot || down === tot);
+  return { results, consistent, globalDir: up>down?'up':'down', totalUp: up, totalDown: down, mixed: mix, totalM: tot,
+    message: consistent ? `🌍 全球一致 ${up===tot?'📈看多':'📉看空'} (${up}多/${down}空/${mix}分歧, ${tot}國)` : `⚠️ 全球分歧 (${up}多/${down}空/${mix}分歧, ${tot}國)` };
 }
 
-// ── Main ──
+// ══════════════════════════════════════════
+//  Main
+// ══════════════════════════════════════════
+
 async function main(options = {}) {
-  atStr = options.at || null;
-  const _ignored = atStr;
-  const backtestId = options.backtestId || null;
+  const atStr = options.at || null;
   const jsonMode = options.json || false;
-  dataProvider = backtestId ? require('./backtest/data-provider') : null;
-  const log = jsonMode ? ()=>{}
-: console.log;
+  const log = jsonMode ? ()=>{} : console.log;
 
   const result = {
     timestamp: new Date().toISOString(),
     atTime: atStr || 'now',
+    dateKey: getHktDateKey(atStr ? new Date(atStr).getTime() : Date.now()),
     steps: [],
-    trendHealthy: false,
-    trendDirection: null,
-    reason: '',
+    conditionA: null, conditionB: null, conditionC: null, conditionD: null,
+    consensusTrendConfirmed: false, trendDirection: null, reason: '', tracking: null,
   };
 
-  // Step 1-2: Timezone
   const {h,m} = getHktTime(atStr);
   const {sessions, markets} = getActiveMarkets(h,m);
 
-  result.steps.push({ step:1, name:'時區檢測', status:sessions.length>0?'pass':'fail',
-    detail:sessions.map(s=>s.label).join(' + ')||'休市' });
-  result.steps.push({ step:2, name:'開盤市場', status:markets.length>0?'pass':'fail',
-    detail:`${markets.length}市場: ${markets.join(', ')}`, markets:[...markets] });
+  result.steps.push({ step:1, name:'時區檢測', status:sessions.length?'pass':'fail', detail:sessions.map(s=>s.label).join(' + ')||'休市' });
+  result.steps.push({ step:2, name:'開盤市場', status:markets.length?'pass':'fail', detail:`${markets.length}市場: ${markets.join(', ')}` });
+  if (!markets.length) { result.reason = '休市'; return result; }
 
-  if (markets.length === 0) {
-    result.trendHealthy = false; result.reason = '休市';
-    return result;
+  // A1: tv-correlation 折溢價變小
+  const a1 = await fetchSpreadTrend();
+  result.conditionA = a1;
+  result.steps.push({ step:3, name:'A1: tv-correlation 折溢價變小', status: a1.small?'pass':(a1.available?'warn':'fail'), detail: a1.message });
+
+  // A2: tv-turn 板塊折溢價收斂
+  const a2 = await fetchSectorSpread();
+  result.conditionB = a2;
+  result.steps.push({ step:4, name:'A2: tv-turn 板塊折溢價收斂', status: a2.small?'pass':(a2.available?'warn':'fail'), detail: a2.message });
+
+  // B: 商品技術共識
+  const b = await fetchCommodityConsensus();
+  result.conditionC = b;
+  result.steps.push({ step:5, name:'B: 商品技術共識', status: b.consensusReached?'pass':(b.available?'warn':'info'), detail: b.message });
+
+  // C: 熱點事件
+  const c = await fetchHotEvents();
+  result.conditionD = c;
+  result.steps.push({ step:6, name:'C: 當日熱點事件', status: c.hasCritical?'warn':(c.available?'info':'info'), detail: c.message });
+
+  // 全球市場一致
+  let rotData = null;
+  try { rotData = JSON.parse(fs.readFileSync(ROTATION_UI_PATH, 'utf-8')); } catch {}
+  const globalM = rotData ? analyzeAllMarkets(rotData) : { consistent: false, globalDir: null, message: '無法獲取市場數據', results: [], totalUp:0, totalDown:0, mixed:0, totalM:0 };
+  result.steps.push({ step:7, name:'全球市場一致(10國)', status: globalM.consistent?'pass':'warn', detail: globalM.message, allMarkets: globalM.results });
+
+  // 最終判定
+  const aOk = a1.small && a2.small;
+  const dOk = globalM.consistent;
+  const confirmed = aOk && dOk;
+  const dir = globalM.consistent ? globalM.globalDir : (globalM.totalUp > globalM.totalDown ? 'up' : 'down');
+
+  result.consensusTrendConfirmed = confirmed;
+  result.trendDirection = dir;
+
+  const good = [];
+  const bad = [];
+  if (a1.small) good.push('A1折溢價變小'); else bad.push('A1折溢價未收斂');
+  if (a2.small) good.push('A2板塊收斂'); else bad.push('A2板塊未收斂');
+  if (b.consensusReached) good.push('B商品共識');
+  if (c.hasCritical) good.push('C關鍵事件');
+  if (dOk) good.push('全球一致'); else bad.push('全球分歧');
+
+  result.steps.push({
+    step:8, name:'一致趨勢判定', status: confirmed?'pass':'warn',
+    detail: confirmed ? `🟢 一致趨勢確認 — ${dir==='up'?'📈上漲':'📉下跌'} (${good.join(', ')})` : `⏸️ 條件不足 (${bad.join(', ')})`,
+  });
+
+  // 跨天追蹤
+  const state = loadTrackingState();
+  if (state.dateKey !== result.dateKey) { state.dateKey = result.dateKey; state.conditions = {}; state.durationCount = 0; }
+  state.conditions = { ...state.conditions, consensusTrendConfirmed: confirmed, direction: dir, a1: a1.small, a2: a2.small };
+  state.durationCount++;
+  saveTrackingState(state);
+  result.tracking = state;
+  result.steps.push({ step:9, name:'跨天追蹤', status:'info', detail: `📅 ${result.dateKey} 第${state.durationCount}次檢查` });
+
+  result.reason = confirmed ? `🟢 ${good.join(' + ')}` : `⏸️ ${bad.join(', ')}`;
+
+  if (!jsonMode) {
+    log(`\n═════ 一致趨勢行情 ═════`);
+    log(`確認: ${confirmed?'🟢是':'⚠️否'} | 方向: ${dir==='up'?'📈上漲':'📉下跌'}`);
+    log(`跨天: ${state.durationCount}次`); log('═══════════════════════\n');
   }
-
-  // ── Step 3: 商品放量檢查 ──
-  const volData = await fetchVolumeSurge(backtestId);
-  const volResult = checkVolumeSurge(volData);
-  result.steps.push({ step:3, name:'商品放量(金銀/油/BTC/ETH/匯率)', status: volResult.hasSurge?'pass':'warn',
-    detail: volResult.message, volumeSurge: volResult });
-
-  const surgeOk = volResult.hasSurge;
-  let surgeReason = surgeOk ? '' : '❌ 無放量'; // used in final
-
-  // Fetch rotation data
-  const rotData = await fetchRotationData(backtestId);
-  if (!rotData?.countries) {
-    result.steps[1].status = 'fail';
-    result.trendHealthy = false; result.reason = '數據不可用';
-    return result;
-  }
-
-  // Step 4: 全球市場一致 (開盤+收盤)
-  const allMarkets = analyzeAllMarkets(rotData);
-  result.steps.push({ step:4, name:'全球市場一致(10國)', status:allMarkets.consistent?'pass':'warn',
-    detail: allMarkets.message, allMarkets: allMarkets.results });
-
-  // Step 5: Premium SMALL check
-  const premium = checkPremiumSmall(rotData, markets);
-  result.steps.push({ step:5, name:'折溢價小', status:premium.small?'pass':'warn',
-    detail: premium.message, premium, marketData: premium.details });
-
-  // Step 6: Sub-sector consensus
-  const subSector = checkSubSectorConsensus(rotData);
-  result.steps.push({ step:6, name:'四級板塊一致', status:subSector.allConsistent?'pass':'warn',
-    detail: subSector.message, subSectors: subSector.details });
-
-  // Step 7: composite slope 方向確認
-  const indexData = await fetchIndexDirection(backtestId);
-  // Compute slope
-  let slopeVal = null;
-  try {
-    const idxResp = await httpGet('http://localhost:3334/api/data', 3000);
-    if (idxResp?.indexData) slopeVal = calcSlope(idxResp.indexData, 10);
-  } catch {}
-  const slopeMsg = slopeVal !== null
-    ? `📐 composite slope: ${slopeVal.toFixed(4)} (${slopeVal > 0 ? '📈向上' : '📉向下'})`
-    : '📐 composite slope: 不足10點';
-  result.steps.push({ step:7, name:'composite slope+方向', status:indexData.available?'pass':'pass',
-    detail: slopeMsg, slope: slopeVal, index: indexData });
-
-  // Step 8: Events
-  result.steps.push({ step:8, name:'事件確認', status:'info', detail: '商品放量+全球一致已確認，等tv-intel接入' });
-
-  // Step 9: Final judgment
-  const consensusOk = premium.consensus && premium.small;
-  const subOk = subSector.allConsistent;
-
-  // 趨勢健康 = 商品放量 + 全球一致 + 折溢價小 + 四級一致 + slope 方向
-  const trendHealthy = surgeOk && allMarkets.consistent && consensusOk && subOk;
-  const trendDir = allMarkets.globalDir;
-
-  const reasons = [];
-  if (surgeOk) reasons.push(`🔥商品放量(${volResult.matched.map(m=>m.symbol).join(',')})`);
-  else reasons.push('❌ 無商品放量');
-  if (allMarkets.consistent) reasons.push(`🌍全球${allMarkets.globalDir === 'up' ? '📈看多' : '📉看空'}`);
-  else reasons.push('❌ 全球分歧');
-  if (premium.small) reasons.push('折溢價小');
-  else reasons.push('❌ 折溢價偏大');
-  if (premium.consensus) reasons.push('市場一致');
-  else reasons.push('❌ 市場分歧');
-  if (subSector.allConsistent) reasons.push('四級一致');
-  else reasons.push('⚠️ 四級分歧');
-  if (slopeVal !== null) reasons.push(slopeVal > 0 ? '📈slope向上' : '📉slope向下');
-
-  result.steps.push({ step:9, name:'趨勢判斷', status:trendHealthy?'pass':'warn',
-    detail: trendHealthy
-      ? `🟢 趨勢健康 — ${trendDir==='up'?'📈上漲':'📉下跌'}趨勢延續 (${reasons.join(', ')})`
-      : `⚠️ 條件不足 — ${reasons.join(', ')}` });
-
-  result.trendHealthy = trendHealthy;
-  result.trendDirection = trendDir;
-  result.reason = reasons.join(' + ');
-
-  log(`📊 趨勢管理: ${trendHealthy?'🟢健康':'⚠️條件不足'} | ${reasons.join(', ')}`);
-
   return result;
 }
 
-// CLI
 if (require.main === module) {
   const args = process.argv.slice(2);
   const atI = args.indexOf('--at');
   const atStr = atI>=0 ? args[atI+1] : null;
-  const jsonMode = args.includes('--json');
-
-  const btI = args.indexOf('--backtest-id');
-  const btId = btI>=0 ? args[btI+1] : null;
-
-  main({ at:atStr, json:jsonMode, backtestId: btId }).then(r => {
-    if (jsonMode) { console.log(JSON.stringify(r,null,2)); return; }
-    console.log(`\n═════ 一致行情趨勢管理機器人 ═════`);
-    console.log(`時間: ${r.atTime}`);
-    console.log(`趨勢健康: ${r.trendHealthy?'🟢 是':'⚠️ 否'}`);
-    console.log(`方向: ${r.trendDirection==='up'?'📈上漲':r.trendDirection==='down'?'📉下跌':'⚪未定'}`);
-    console.log(`原因: ${r.reason}`);
-    console.log('\n── 步驟 ──');
-    for (const s of r.steps) {
-      const ic = {pass:'✅',warn:'⚠️',fail:'❌',info:'💬',active:'⏳'}[s.status]||'❓';
-      console.log(`  ${ic} ${s.name}: ${s.detail.substring(0,70)}`);
-    }
-    console.log('═══════════════════════════════════\n');
-  }).catch(e => { console.error(e.message); process.exit(1); });
+  main({ at:atStr, json:args.includes('--json') }).then(r => { if (args.includes('--json')) console.log(JSON.stringify(r,null,2)); }).catch(e => console.error(e.message));
 }
 
-module.exports = { main, checkPremiumSmall, checkSubSectorConsensus, checkVolatility };
+module.exports = { main };
