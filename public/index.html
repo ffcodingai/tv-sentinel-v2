@@ -1,0 +1,438 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>🤖 哨兵指揮中心</title>
+<style>
+:root{--bg:#0f0f1a;--card:#1a1a2e;--border:#2a2a4a;--gold:#f7971e;--gl:#ffd200;--green:#00b09b;--gcl:#96c93d;--red:#e52d27;--rcl:#ff6b6b;--blue:#4facfe;--bl:#00f2fe;--text:#e0e0e0;--dim:#888;--purple:#a855f7;--r:12px}
+*{margin:0;padding:0;box-sizing:border-box}
+body{background:var(--bg);color:var(--text);font-family:'Segoe UI',sans-serif}
+.hdr{background:linear-gradient(135deg,#1a1a2e,#16213e);border-bottom:1px solid var(--border);padding:14px 24px;display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:10px}
+.hdr h1{font-size:18px;background:linear-gradient(135deg,var(--gold),var(--gl));-webkit-background-clip:text;-webkit-text-fill-color:transparent;font-weight:700}
+.hs{display:flex;gap:12px;font-size:12px}.hs span{background:var(--card);padding:4px 12px;border-radius:16px;border:1px solid var(--border)}
+.c{max-width:1500px;margin:0 auto;padding:20px;display:flex;flex-direction:column;gap:16px}
+.btn{background:var(--card);color:var(--text);border:1px solid var(--border);padding:6px 14px;border-radius:6px;cursor:pointer;font-size:12px}
+.btn:hover{filter:brightness(1.2)}.bg{background:linear-gradient(135deg,var(--gold),#e67e22);color:#000;border:none;font-weight:600}
+.tb{display:flex;background:var(--card);border-radius:var(--r);border:1px solid var(--border);overflow:hidden}
+.tbb{padding:10px 20px;font-size:13px;cursor:pointer;border:none;background:transparent;color:var(--dim);flex:1;text-align:center;border-bottom:2px solid transparent;transition:all .2s}
+.tbb:hover{color:var(--text);background:rgba(255,255,255,.02)}
+.tbb.on{color:var(--gold);border-bottom-color:var(--gold);background:var(--bg);font-weight:600}
+.tab{display:none}.tab.on{display:flex;flex-direction:column;gap:16px}
+.cd{background:var(--card);border-radius:var(--r);border:1px solid var(--border);padding:20px}
+.cd h2{font-size:15px;margin-bottom:12px;display:flex;align-items:center;gap:6px}
+.sg{display:grid;grid-template-columns:repeat(auto-fit,minmax(300px,1fr));gap:14px}
+.sc{background:var(--bg);border-radius:10px;border:1px solid var(--border);padding:14px;position:relative}
+.sc::before{content:'';position:absolute;top:0;left:0;right:0;height:3px;border-radius:10px 10px 0 0}
+.si::before{background:var(--gold)}.sf::before{background:var(--green)}.sd::before{background:var(--blue)}.sl::before{background:var(--purple)}
+.sc h3{font-size:13px;margin-bottom:8px;display:flex;align-items:center;gap:6px}
+.sr{display:flex;padding:4px 0;font-size:12px;border-bottom:1px solid rgba(42,42,74,.15)}
+.sr .fl{color:var(--dim);min-width:90px;flex-shrink:0}
+.tk{display:inline-block;padding:2px 8px;border-radius:4px;font-size:10px;font-weight:500;margin:1px}
+.t1{background:rgba(0,176,155,.12);color:var(--gcl)}.t2{background:rgba(79,172,254,.12);color:var(--bl)}.t3{background:rgba(247,151,30,.12);color:var(--gold)}.t4{background:rgba(168,85,247,.12);color:var(--purple)}
+.stb{padding:12px 20px;border-radius:10px;display:flex;align-items:center;gap:12px;flex-wrap:wrap;border:1px solid;font-size:14px}
+.stb.g{background:rgba(0,176,155,.08);border-color:var(--green)}.stb.r{background:rgba(229,45,39,.08);border-color:var(--red)}.stb.y{background:rgba(247,151,30,.08);border-color:var(--gold)}.stb.s{background:rgba(79,172,254,.08);border-color:var(--blue)}
+.stb .bi{font-size:28px}
+.stb .st{flex:1}
+.stb .sl{font-weight:600;font-size:15px}
+.stb .sd{font-size:12px;color:var(--dim)}
+.flow{background:var(--bg);border-radius:10px;border:1px solid var(--border);padding:16px}
+.fg{display:flex;flex-wrap:wrap;gap:6px;align-items:center;justify-content:center}
+.fs{background:var(--card);border:1px solid var(--border);border-radius:8px;padding:8px 10px;min-width:90px;text-align:center;font-size:11px;transition:all .3s}
+.fs.ok{border-color:var(--green)}.fs.wa{border-color:var(--gold)}.fs.tr{border-color:var(--red);box-shadow:0 0 8px rgba(229,45,39,.4)}.fs.fa{border-color:var(--red);opacity:.6}
+.fs .i{font-size:16px}.fs .l{font-weight:600;font-size:10px}.fs .d{color:var(--dim);font-size:9px}
+.ar{color:var(--dim);font-size:14px;flex-shrink:0}
+.msg{padding:10px 14px;border-radius:8px;border:1px solid;margin-top:8px;font-size:12px;display:none}
+.msg.s{display:flex;align-items:center;gap:8px}
+.msg.r{border-color:var(--red);background:rgba(229,45,39,.1)}.msg.g{border-color:var(--green);background:rgba(0,176,155,.1)}
+table{width:100%;border-collapse:collapse;font-size:11px;margin-top:6px}
+th{text-align:left;padding:4px 6px;border-bottom:1px solid var(--border);color:var(--dim);font-weight:500}
+td{padding:3px 6px;border-bottom:1px solid rgba(42,42,74,.3)}.gc{color:var(--gcl)}.rc{color:var(--rcl)}.yc{color:var(--gold)}
+.arch{font-size:11px;font-family:monospace;white-space:pre;line-height:1.5;overflow-x:auto;padding:10px;background:var(--bg);border-radius:8px;border:1px solid var(--border)}
+input[type=text]{background:var(--bg);border:1px solid var(--border);border-radius:6px;padding:6px 10px;color:var(--text);font-size:12px;outline:none;width:170px}
+input[type=text]:focus{border-color:var(--gold)}
+select{background:var(--bg);border:1px solid var(--border);border-radius:6px;padding:6px 10px;color:var(--text);font-size:12px;outline:none}
+select:focus{border-color:var(--gold)}
+::-webkit-scrollbar{width:6px}::-webkit-scrollbar-thumb{background:var(--border);border-radius:3px}
+
+/* Log styles */
+.log-bar{display:flex;gap:10px;align-items:center;flex-wrap:wrap;padding:8px 0}
+.log-bar label{font-size:12px;color:var(--dim)}
+.log-count{font-size:12px;color:var(--dim)}
+.log-refresh{font-size:11px;color:var(--gold)}
+.log-table-wrap{max-height:70vh;overflow-y:auto;border:1px solid var(--border);border-radius:8px;background:var(--bg)}
+.log-table-wrap table{font-size:11px}
+.log-table-wrap th{position:sticky;top:0;background:var(--card);z-index:1}
+.log-row-tt{color:var(--red)}.log-row-info{color:var(--blue)}.log-row-sc{color:var(--gold)}.log-row-tr{color:var(--gold);font-weight:600}
+.log-evtdot{display:inline-block;width:8px;height:8px;border-radius:50%;margin-right:4px}
+.log-evtdot.tr{background:var(--red)}.log-evtdot.info{background:var(--blue)}.log-evtdot.sc{background:var(--gold)}
+
+/* Rotation grid */
+.rot-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:12px}
+.rot-card{background:var(--bg);border-radius:10px;border:1px solid var(--border);padding:14px;position:relative;transition:all .3s}
+.rot-card:hover{border-color:var(--gold);box-shadow:0 0 12px rgba(247,151,30,.15)}
+.rot-card::before{content:'';position:absolute;top:0;left:0;right:0;height:3px;border-radius:10px 10px 0 0;background:var(--blue)}
+.rot-card.judge::before{background:linear-gradient(90deg,var(--gold),var(--purple))}
+.rot-card .rc-header{display:flex;align-items:center;gap:8px;margin-bottom:10px}
+.rot-card .rc-header .rc-icon{font-size:24px}
+.rot-card .rc-header .rc-name{font-size:13px;font-weight:600}
+.rot-card .rc-header .rc-agent{font-size:10px;color:var(--dim);font-family:monospace}
+.rot-card .rc-row{font-size:11px;padding:3px 0;display:flex;gap:8px}
+.rot-card .rc-row .rc-label{color:var(--dim);min-width:70px}
+.rot-card .rc-actions{display:flex;gap:6px;margin-top:10px;flex-wrap:wrap}
+.rot-card .rc-actions button{flex:1}
+</style>
+</head>
+<body>
+<div class="hdr"><h1>🤖 哨兵指揮中心</h1><div class="hs"><span id="clk">--:--:--</span><span id="cnt0">0</span><span id="rotCnt">0 rotation</span><span id="ltCnt" style="color:#f97316;font-size:11px">LT:0</span><span id="stCnt" style="color:#3b82f6;font-size:11px">ST:0</span></div></div>
+<div class="c"><div class="tb" id="tabs"></div><div class="tab" id="p0"></div><div class="tab" id="p1"></div><div class="tab" id="p2"></div><div class="tab" id="p3"></div><div class="tab" id="p4"></div><div class="tab" id="p5"></div></div>
+<script>
+const A='/api';
+const RBT=[
+{ic:'🔔',nm:'一致行情轉折哨兵',tp:'check',ep:'/api/sentinels/check',
+ fn:'📈上漲趨勢 → 監控上漲轉折點\n📉下跌趨勢 → 監控下跌轉折點\n\n監控條件:\n🔧技術事件(阻力/支撐/形態) 🪙大宗商品(黃金/原油)\n💱匯率(USD/CNH) 🌍地緣事件 📊金融數據(非農/CPI/利率)',
+ ds:[['📈 tv-trend','一級板塊折溢價 (8288)'],['📈 tv-trend','四級板塊 IT 子類'],['🛰️ tv-intel','技術/商品/匯率/地緣/經濟事件']],
+ cd:['① 一致行情 ✅ 開盤全部同方向 (≥60%)','② 折溢價擴大 ✅ 溢價群 vs 折價群 >30%','③ 子版塊分歧 ✅ IT 子類溢價/折價對立','④ 事件一致 ✅ AI intel 事件確認'],
+ arch:'tv-trend→折溢價→一致?→溢價擴大?→子版塊→事件→🚨觸發\n📈向上→折溢價大→上漲轉折觸發\n📉向下→折溢價大→下跌轉折觸發'},
+{ic:'📈',nm:'一致行情趨勢管理機器人',tp:'trend',ep:'/api/sentinels/trend-check',
+ fn:'📈利好事件 → 確認上漲趨勢延續\n📉利空事件 → 確認下跌趨勢延續\n\n監控條件(同第一個):\n🔧技術事件 🪙大宗商品 💱匯率\n🌍地緣事件 📊金融數據公布\n\n[待提供] 全部市場+股指期貨同向',
+ ds:[['📈 tv-trend','折溢價小(一級+四級一致)'],['📈 tv-index','方向確認(3334)'],['🛰️ tv-intel','事件確認'],['⏳ 待提供','全部市場+期貨同向']],
+ cd:['① 折溢價小 ✅ 一級板塊無分歧 (<0.30)','② 四級一致 ✅ IT 子類同方向','③ 方向確認 ✅ tv-index','④ 事件驅動 ✅ AI intel'],
+ arch:'tv-trend→折溢價小→一致→index→事件→🟢趨勢健康\n折溢價小+方向一致+事件 = 🟢趨勢延續\n折溢價變大/分歧 = ⚠️轉弱'},
+{ic:'🔄',nm:'板塊輪動系統',tp:'rotation',ep:'/api/sentinels/rotation-check',
+ fn:'領導資金流向監控 + 各市場板塊折溢價變化\n\n驅動機制:\n🏆 領頭資產(商品/期貨/貨幣) 放量+技術共識\n→ 一致行情 → 板塊輪動在各市場間傳導\n\n物料來源:\n📈 AI TREND → 折溢價板塊 + VolTrend\n🛰️ AI INTEL → 個股事件 + 技術位 + 財報',
+ ds:[['🔄 tv-rot-judge','領頭資產掃描 + 輪動階段判定'],['📈 tv-trend','板塊折溢價 + VolTrend'],['🛰️ tv-intel','事件/技術位/財報'],['⏳ FF-Mac','商品/期貨/貨幣放量 API (待整合)']],
+ cd:['① 掃描全域資產(商品/期貨/貨幣/指數)','② 找放量異常+進技術共識區的領頭資產','③ 判定一致行情是否成形','④ 派出 9 個市場哨兵收集板塊反應','⑤ 綜合判定輪動階段 (CN→EU→US→CN...)'],
+ arch:'tv-rot-judge→領頭資產掃描→一致行情?→派9哨兵→板塊反應→🌊輪動判定\n領頭資產放量+技術共識 = 🚀一致行情\n無領頭資產 = ⏸️無明顯輪動信號'},
+{ic:'⬇️',nm:'LT 上漲轉折哨兵',tp:'lt',ep:'/api/sentinels/lt-check',
+ fn:'📉 上漲結構破壞 → 進入T轉折監控\n\n觸發條件:\n🔴 L段上漲結構破壞\n🔴 價格多次測試同一阻力位未突破\n🔴 SAR翻轉/斜率轉負/EMA收斂\n🔴 板塊折溢價擴大\n\n監控項:\n• 價格是否遠離轉折區\n• 阻力測試次數與位置\n• 折溢價變化趨勢\n\n結束條件:\n✅ 確認進入 S 段\n✅ 或重回 L 段延續\n\n輸出: LT-xxx K線段 (上漲→轉折)',
+ ds:[['📈 tv-trend','板塊折溢價變化'],['🛰️ tv-intel','SAR/EMA/斜率計算'],['📐 3334','L段定位 + K線段ID']],
+ cd:['① L段確認 ✅ 上漲趨勢運行中','② 結構破壞 ⚠️ 阻力測試多次','③ SAR/斜率確認 🔄 翻轉信號','④ 輸出 LT-xxx 📝 新段生成'],
+ arch:'L段→阻力測試→SAR翻轉?→LT-xxx→T轉折\nL→撞牆→放量→SAR翻轉→LT確認',
+ ck:'LT哨兵檢查觸發，結果待監控回報'},
+{ic:'⬆️',nm:'ST 下跌轉折哨兵',tp:'st',ep:'/api/sentinels/st-check',
+ fn:'📈 下跌結構破壞 → 進入T轉折監控\n\n觸發條件:\n🟢 S段下跌結構破壞\n🟢 價格多次測試同一支撐位未跌破\n🟢 SAR翻轉/斜率轉正/EMA收斂\n🟢 板塊折溢價縮小\n\n監控項:\n• 價格是否遠離轉折區\n• 支撐測試次數與位置\n• 折溢價變化趨勢\n\n結束條件:\n✅ 確認進入 L 段\n✅ 或重回 S 段延續\n\n輸出: ST-xxx K線段 (下跌→轉折)',
+ ds:[['📈 tv-trend','板塊折溢價變化'],['🛰️ tv-intel','SAR/EMA/斜率計算'],['📐 3334','S段定位 + K線段ID']],
+ cd:['① S段確認 ✅ 下跌趨勢運行中','② 結構破壞 ⚠️ 支撐測試多次','③ SAR/斜率確認 🔄 翻轉信號','④ 輸出 ST-xxx 📝 新段生成'],
+ arch:'S段→支撐測試→SAR翻轉?→ST-xxx→T轉折\\nS→觸底→放量→SAR翻轉→ST確認',
+ ck:'ST哨兵檢查觸發，結果待監控回報'},
+{ic:'📋',nm:'執行日誌',tp:'logs',ep:''}
+];
+
+// ─── Tab 2 (Rotation) Data ───
+const ROTATION_MARKETS = [
+  {id:'judge',flag:'🔄',name:'板塊輪動判定中樞',agent:'tv-rot-judge',market:'global',ex:'—',desc:'領頭資產掃描 + 9市場協調調度',span:'rows',cls:'judge'},
+  {id:'cn',flag:'🇨🇳',name:'板塊輪動-中國',agent:'tv-rot-cn',market:'cn',ex:'SSE/SZSE',desc:'A 股板塊折溢價 + 事件'},
+  {id:'kr',flag:'🇰🇷',name:'板塊輪動-韓國',agent:'tv-rot-kr',market:'kr',ex:'KRX',desc:'韓股板塊折溢價 + 事件'},
+  {id:'jp',flag:'🇯🇵',name:'板塊輪動-日本',agent:'tv-rot-jp',market:'jp',ex:'TSE',desc:'日股板塊折溢價 + 事件'},
+  {id:'tw',flag:'🇹🇼',name:'板塊輪動-台灣',agent:'tv-rot-tw',market:'tw',ex:'TWSE',desc:'台股板塊折溢價 + 事件'},
+  {id:'hk',flag:'🇭🇰',name:'板塊輪動-香港',agent:'tv-rot-hk',market:'hk',ex:'HKEX',desc:'港股板塊折溢價 + 事件'},
+  {id:'uk',flag:'🇬🇧',name:'板塊輪動-英國',agent:'tv-rot-uk',market:'uk',ex:'LSE',desc:'英股板塊折溢價 + 事件'},
+  {id:'fr',flag:'🇫🇷',name:'板塊輪動-法國',agent:'tv-rot-fr',market:'fr',ex:'EURONEXT',desc:'法股板塊折溢價 + 事件'},
+  {id:'de',flag:'🇩🇪',name:'板塊輪動-德國',agent:'tv-rot-de',market:'de',ex:'XETR',desc:'德股板塊折溢價 + 事件'},
+  {id:'us',flag:'🇺🇸',name:'板塊輪動-美國',agent:'tv-rot-us',market:'us',ex:'NASDAQ/NYSE',desc:'美股板塊折溢價 + 事件'},
+];
+
+let logTimer = null;
+
+function ck(){
+ let n=new Date(Date.now()+8*3600000);
+ document.getElementById('clk').textContent=
+  String(n.getUTCHours()).padStart(2,'0')+':'+
+  String(n.getUTCMinutes()).padStart(2,'0')+':'+
+  String(n.getUTCSeconds()).padStart(2,'0');
+}
+
+function rd(i){
+ if(i<2)rd_tab01(i);
+ else if(i===2)rd_tab2(i);
+ else if(i===3||i===4)rd_tab01(i); // LT/ST use same card layout
+ else if(i===5)rd_tab3();
+}
+
+// ─── Tabs 0 & 1 (existing) ───
+function rd_tab01(i){
+ let r=RBT[i],e=document.getElementById('p'+i);
+ if(!e)return;
+ let ds=r.ds.map(s=>'<div style="font-size:12px;padding:3px 0"><span class="tk '+(s[0].includes('待')?'t4':s[0].includes('tv-trend')?'t1':s[0].includes('tv-index')?'t3':s[0].includes('tv-intel')?'t2':'t3')+'">'+s[0]+'</span> → '+s[1]+'</div>').join('');
+ e.innerHTML=
+ '<div class="stb g" id="b'+i+'"><div class="bi">'+r.ic+'</div><div class="st"><div class="sl">'+r.nm+' — <span id="bl'+i+'" style="color:var(--gcl)">🟢 運行中</span></div><div class="sd" id="bd'+i+'">等待第一次哨兵檢查...</div></div><div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center"><button class="btn bg" onclick="rn('+i+')">▶ 執行</button><input type="text" id="ht'+i+'" placeholder="2026-06-10 09:30"><button class="btn" onclick="rn('+i+',1)">回測</button></div></div>'+
+
+ '<div class="sg">'+
+ '<div class="sc si"><h3>🪪 機器人身分</h3><div class="sr"><span class="fl">名稱</span><span style="font-weight:600">'+r.nm+'</span></div><div class="sr"><span class="fl">ID</span><span style="font-size:10px;color:var(--dim)">'+(i===0?'1393bbaf-...':'6cee3021-...')+'</span></div><div class="sr"><span class="fl">類型</span><span style="color:var(--gold)">'+r.tp+'</span></div><div class="sr"><span class="fl">範圍</span>🌐 全球 — 當前時區開盤市場</div><div class="sr"><span class="fl">間隔</span>5 分鐘</div></div>'+
+ '<div class="sc sf"><h3>🎯 功能定義</h3><div style="font-size:12px;line-height:1.6;white-space:pre-line">'+r.fn+'</div></div>'+
+ '<div class="sc sd"><h3>📡 數據源結構</h3>'+ds+'</div>'+
+ '<div class="sc sl"><h3>🧠 決策邏輯</h3><div style="font-size:12px;line-height:1.7">'+r.cd.join('<br>')+'</div></div>'+
+ '</div>'+
+
+ '<div class="cd"><h2>🏗️ 系統架構 — 數據流到觸發</h2><div class="arch">'+r.arch+'</div></div>'+
+
+ '<div class="cd"><h2>🧪 即時執行 — 8 步決策流程</h2><div class="flow"><div class="fg" id="fl'+i+'">'+
+ [1,2,3,4,5,6,7,8].map(j=>'<div class="fs" id="s'+i+'_'+j+'"><div class="i">⏳</div><div class="l">Step '+j+'</div><div class="d" id="d'+i+'_'+j+'">就緒</div></div>'+(j<8?'<span class="ar">→</span>':'')).join('')+
+ '</div><div class="msg" id="msg'+i+'"><span id="mi'+i+'"></span><span id="mm'+i+'"></span></div></div></div>'+
+
+ '<div class="cd" id="dc'+i+'"><h2>📊 開盤市場 — 一級板塊折溢價明細</h2><div style="padding:8px;color:var(--dim);font-size:12px">⬆ 點擊上方「▶ 執行」按鈕載入數據</div><div id="dt'+i+'"></div></div>';
+}
+
+async function rn(i,h){
+ if(i>1&&i<3)return; // Skip rotation(2), allow LT(3), ST(4)
+ if(i>4)return; // Skip logs(5)
+ try{
+  let r=RBT[i],at=h?document.getElementById('ht'+i).value.trim():'';
+  for(let j=1;j<=8;j++){let e=document.getElementById('s'+i+'_'+j);if(e)e.className='fs';let d=document.getElementById('d'+i+'_'+j);if(d)d.textContent='⏳ 檢查中...';}
+  let msg=document.getElementById('msg'+i);if(msg)msg.className='msg';
+  let dc=document.getElementById('dc'+i);if(dc)dc.style.display='none';
+  let bl=document.getElementById('bl'+i);if(bl)bl.innerHTML='<span style="color:var(--gold)">⏳ 執行中</span>';
+  let bd=document.getElementById('bd'+i);if(bd)bd.textContent='正在檢查...';
+  let res=await fetch(r.ep,{method:'POST',headers:{'Content-Type':'application/json'},body:at?JSON.stringify({at,source:'manual'}):JSON.stringify({source:'manual'})}).then(r=>r.json());
+  if(res&&res.steps)for(let s of res.steps){
+   let e=document.getElementById('s'+i+'_'+s.step);if(!e)continue;
+   let sc=s.status==='pass'?'ok':s.status==='warn'?'wa':s.status==='trigger'?'tr':'fa';
+   e.className='fs '+sc;
+   let d=document.getElementById('d'+i+'_'+s.step);if(d)d.textContent=(s.detail||'').substring(0,40);
+  }
+  let ba=document.getElementById('b'+i);
+  if(ba){
+   if(r.tp==='check'){
+    if(res&&res.triggered){
+     ba.className='stb r';if(bl)bl.innerHTML='<span style="color:var(--red)">🚨 觸發中</span>';if(bd)bd.textContent=(res.triggerType||'')+' — '+(res.triggerReason||'');
+     if(msg)msg.className='msg s r';let mi=document.getElementById('mi'+i);if(mi)mi.textContent='🔴';let mm=document.getElementById('mm'+i);if(mm)mm.textContent='🚨 '+(res.triggerReason||'');
+    }else{
+     ba.className='stb g';if(bl)bl.innerHTML='<span style="color:var(--gcl)">🟢 運行中</span>';if(bd)bd.textContent='✅ 未觸發 — '+(res?res.triggerReason||'':'');
+     if(msg)msg.className='msg s g';let mi=document.getElementById('mi'+i);if(mi)mi.textContent='🟢';let mm=document.getElementById('mm'+i);if(mm)mm.textContent='未觸發';
+    }
+   }else{
+    if(res&&res.trendHealthy){
+     ba.className='stb g';if(bl)bl.innerHTML='<span style="color:var(--gcl)">🟢 趨勢健康</span>';if(bd)bd.textContent=(res.trendDirection==='up'?'📈上漲':'📉下跌')+'趨勢延續 — '+(res.reason||'');
+     if(msg)msg.className='msg s g';let mi=document.getElementById('mi'+i);if(mi)mi.textContent='🟢';let mm=document.getElementById('mm'+i);if(mm)mm.textContent='✅ 趨勢健康';
+    }else{
+     ba.className='stb y';if(bl)bl.innerHTML='<span style="color:var(--gold)">⚠️ 趨勢轉弱</span>';if(bd)bd.textContent=res?res.reason||'條件未滿足':'條件未滿足';
+     if(msg)msg.className='msg s b';let mi=document.getElementById('mi'+i);if(mi)mi.textContent='⚠️';let mm=document.getElementById('mm'+i);if(mm)mm.textContent='⚠️ 趨勢轉弱';
+    }
+   }
+  }
+  try{
+   let s3=res&&res.steps?res.steps.find(x=>x.step===3):null;
+   if(s3&&Array.isArray(s3.marketData)&&s3.marketData.length>0&&dc){
+    dc.style.display='block';
+    let h='<table><tr><th>市場</th><th>方向</th><th>🟢溢價</th><th>🔴折價</th><th>🟡多空</th></tr>';
+    for(let m of s3.marketData){
+     let upS=(m&&m.sectors&&Array.isArray(m.sectors.up))?m.sectors.up.join(', '):'-';
+     let dnS=(m&&m.sectors&&Array.isArray(m.sectors.down))?m.sectors.down.join(', '):'-';
+     let muS=(m&&m.sectors&&Array.isArray(m.sectors.multi))?m.sectors.multi.join(', '):'-';
+     let d=m&&m.direction==='up'?'🟢':m&&m.direction==='down'?'🔴':'🟡';
+     h+='<tr><td>'+(m&&m.flag||'')+' '+(m&&m.label||'')+'</td><td>'+d+'</td><td class="gc">'+upS+'</td><td class="rc">'+dnS+'</td><td class="yc">'+muS+'</td></tr>';
+    }
+    h+='</table>';let dt=document.getElementById('dt'+i);if(dt)dt.innerHTML=h;
+   }
+  }catch(e2){}
+  try{
+   let s4=res&&res.steps?res.steps.find(x=>x.step===4):null;
+   if(s4&&s4.subSectors&&Array.isArray(s4.subSectors)&&s4.subSectors.length>0&&dc){
+    let h='<h3 style="font-size:12px;margin:10px 0 4px">🔍 四級板塊 (IT 子類)</h3>';
+    for(let ss of s4.subSectors){
+     h+='<div style="font-size:11px;color:var(--gold);margin:4px 0">'+(ss.flag||'')+' '+(ss.label||'')+'</div>';
+     if(ss.groups&&typeof ss.groups==='object'){
+      for(let[gk,dirs]of Object.entries(ss.groups)){
+       let up=dirs&&Array.isArray(dirs.UP)?dirs.UP.join(','):'-';
+       let dn=dirs&&Array.isArray(dirs.DOWN)?dirs.DOWN.join(','):'-';
+       let mu=dirs&&Array.isArray(dirs.MULTI)?dirs.MULTI.join(','):'-';
+       h+='<div style="font-size:10px;padding-left:12px">'+gk+': 🟢'+up+' 🔴'+dn+' 🟡'+mu+'</div>';
+      }
+     }
+    }
+    let dt=document.getElementById('dt'+i);if(dt)dt.innerHTML+=h;
+   }
+  }catch(e3){}
+ }catch(e){
+  let bl=document.getElementById('bl'+i);if(bl)bl.innerHTML='<span style="color:var(--red)">❌ 錯誤</span>';
+  let bd=document.getElementById('bd'+i);if(bd)bd.textContent=e.message;
+  let msg=document.getElementById('msg'+i);if(msg){msg.className='msg s r';let mi=document.getElementById('mi'+i);if(mi)mi.textContent='❌';let mm=document.getElementById('mm'+i);if(mm)mm.textContent='錯誤: '+e.message;}
+ }
+}
+
+// ─── Tab 2 (Rotation) ───
+function rd_tab2(i){
+ let e=document.getElementById('p2');
+ if(!e)return;
+ let r=RBT[2];
+ let ds=r.ds.map(s=>'<div style="font-size:12px;padding:3px 0"><span class="tk '+(s[0].includes('待')?'t4':s[0].includes('rot')||s[0].includes('judge')?'t4':s[0].includes('tv-trend')?'t1':s[0].includes('tv-intel')?'t2':'t3')+'">'+s[0]+'</span> → '+s[1]+'</div>').join('');
+
+ // Market cards
+ let cards=ROTATION_MARKETS.map(m=>{
+  let isJudge=m.id==='judge';
+  return '<div class="rot-card'+(isJudge?' judge':'')+'" id="rc_'+m.id+'">'+
+   '<div class="rc-header"><div class="rc-icon">'+m.flag+'</div><div class="rc-name">'+m.name+'</div><div class="rc-agent">'+m.agent+'</div></div>'+
+   '<div class="rc-row"><span class="rc-label">市場</span><span>'+m.market+'</span></div>'+
+   '<div class="rc-row"><span class="rc-label">交易所</span><span>'+m.ex+'</span></div>'+
+   '<div class="rc-row"><span class="rc-label">說明</span><span style="color:var(--dim)">'+m.desc+'</span></div>'+
+   '<div class="rc-row"><span class="rc-label">狀態</span><span id="rcs_'+m.id+'" style="color:var(--dim)">⏳ 待執行</span></div>'+
+   '<div class="rc-actions">'+
+    '<button class="btn bg" onclick="execRotation(\''+m.id+'\')">'+(isJudge?'▶ 整體執行':'▶ 執行')+'</button>'+
+   '</div></div>';
+ }).join('');
+
+ e.innerHTML=
+ '<div class="stb s"><div class="bi">🔄</div><div class="st"><div class="sl">板塊輪動系統 — 9 市場哨兵</div><div class="sd">領頭資產驅動輪動 · 手動觸發（後期自動）</div></div><button class="btn bg" onclick="execRotation(\'judge\')">▶ 整體執行全部 9 市場</button></div>'+
+
+ '<div class="cd"><h2>🎯 功能定義</h2><div style="font-size:12px;line-height:1.6;white-space:pre-line">'+r.fn+'</div></div>'+
+
+ '<div class="cd"><h2>📡 數據源結構</h2>'+ds+'</div>'+
+
+ '<div class="cd"><h2>🧠 決策邏輯</h2><div style="font-size:12px;line-height:1.7">'+r.cd.join('<br>')+'</div></div>'+
+
+ '<div class="cd"><h2>🏗️ 系統架構 — 數據流</h2><div class="arch">'+r.arch+'</div></div>'+
+
+ '<div class="cd"><h2>🌍 9 市場哨兵 (10 agents)</h2><div class="rot-grid">'+cards+'</div></div>';
+}
+
+async function execRotation(marketId){
+ let btn=event&&event.target?event.target:null;
+ if(btn){btn.textContent='⏳ 發送中...';btn.disabled=true;}
+ try{
+  let r=document.getElementById('rcs_'+marketId);
+  if(r)r.textContent='⏳ 請求中...';
+  let res=await fetch(A+'/rotation/exec',{
+   method:'POST',
+   headers:{'Content-Type':'application/json'},
+   body:JSON.stringify({market:marketId})
+  }).then(r=>r.json());
+  let msg='';
+  if(res.ok){
+   let m=ROTATION_MARKETS.find(x=>x.id===marketId);
+   msg='✅ 已記錄觸發 — 請通知 Coordinator：`spawn '+m.agent+'`';
+   if(r)r.innerHTML='<span style="color:var(--gcl)">✅ 已觸發</span>';
+  }else{
+   msg='❌ '+res.error;
+   if(r)r.innerHTML='<span style="color:var(--red)">❌ 錯誤</span>';
+  }
+  alert(msg);
+ }catch(e){
+  let r=document.getElementById('rcs_'+marketId);
+  if(r)r.innerHTML='<span style="color:var(--red)">❌ '+e.message+'</span>';
+  alert('錯誤: '+e.message);
+ }
+ if(btn){btn.textContent='▶ 執行';btn.disabled=false;}
+}
+
+// ─── Tab 3: 執行日誌 ───
+function rd_tab3(){
+ let e=document.getElementById('p5');
+ if(!e)return;
+ e.innerHTML=
+ '<div class="cd">'+
+  '<h2>📋 哨兵執行日誌</h2>'+
+  '<div class="log-bar">'+
+   '<label>篩選哨兵:</label><select id="logFilter" onchange="loadLogs()">'+
+    '<option value="">全部哨兵</option>'+
+   '</select>'+
+   '<label>顯示:</label><select id="logLimit" onchange="loadLogs()">'+
+    '<option value="30">最近 30 筆</option>'+
+    '<option value="100" selected>最近 100 筆</option>'+
+    '<option value="200">最近 200 筆</option>'+
+   '</select>'+
+   '<button class="btn bg" onclick="loadLogs()">🔄 重新整理</button>'+
+   '<span class="log-count" id="logCount"></span>'+
+   '<span class="log-refresh" id="logTimer"></span>'+
+  '</div>'+
+  '<div class="log-table-wrap"><table><thead><tr>'+
+   '<th>時間</th><th>哨兵</th><th>事件</th><th>訊息</th>'+
+  '</tr></thead><tbody id="logBody"></tbody></table></div>'+
+ '</div>';
+
+ // Populate filter dropdown
+ fetch(A+'/sentinels').then(r=>r.json()).then(sentinels=>{
+  let sel=document.getElementById('logFilter');
+  sentinels.forEach(s=>{
+   let o=document.createElement('option');
+   o.value=s.id;
+   o.textContent=s.name+' ('+s.type+')';
+   sel.appendChild(o);
+  });
+ }).catch(()=>{});
+
+ loadLogs();
+ startLogRefresh();
+}
+
+function startLogRefresh(){
+ if(logTimer)clearInterval(logTimer);
+ logTimer=setInterval(()=>{
+  let p5=document.getElementById('p5');
+  if(!p5||!p5.classList.contains('on'))return;
+  let el=document.getElementById('logTimer');
+  if(el){
+   let n=parseInt(el.dataset.count||'0')+1;
+   el.dataset.count=n;
+   el.textContent='⏳ 再 '+(5-n)+' 秒自動更新';
+   if(n>=5){el.dataset.count='0';loadLogs(true);}
+  }
+ },1000);
+}
+
+async function loadLogs(silent){
+ let body=document.getElementById('logBody');
+ let tim=document.getElementById('logTimer');
+ if(!body)return;
+ if(!silent&&tim)tim.textContent='⏳ 載入中...';
+
+ try{
+  let sid=document.getElementById('logFilter').value;
+  let lim=document.getElementById('logLimit').value;
+  let url=A+'/logs?limit='+lim;
+  if(sid)url+='&sentinel_id='+sid;
+  let logs=await fetch(url).then(r=>r.json());
+  if(!Array.isArray(logs)){body.innerHTML='<tr><td colspan="4" style="color:var(--red)">載入失敗</td></tr>';return;}
+
+  let h='';
+  logs.forEach(l=>{
+   let ev=l.event||'';
+   let msg=l.message||'';
+   let nm=l.sentinel_name||'(unknown)';
+   let ts=l.triggered_at||'';
+   let evCls=ev==='triggered'?'tr':ev==='info'?'info':ev==='state_change'?'sc':'';
+   let evDot='<span class="log-evtdot '+evCls+'"></span>';
+   let evLabel=ev==='triggered'?'🔴 觸發':ev==='info'?'ℹ️ 資訊':ev==='state_change'?'🔄 狀態變更':ev==='error'?'❌ 錯誤':ev;
+   h+='<tr class="log-row-'+evCls+'">'+
+    '<td style="white-space:nowrap;font-size:10px">'+ts+'</td>'+
+    '<td style="white-space:nowrap">'+nm+'</td>'+
+    '<td>'+evDot+evLabel+'</td>'+
+    '<td style="max-width:500px;overflow:hidden;text-overflow:ellipsis">'+escHtml(msg)+'</td>'+
+   '</tr>';
+  });
+  body.innerHTML=h||'<tr><td colspan="4" style="color:var(--dim)">暫無日誌</td></tr>';
+
+  let cnt=document.getElementById('logCount');
+  if(cnt)cnt.textContent='共 '+logs.length+' 筆';
+  let n=document.getElementById('logTimer');
+  if(n){n.dataset.count='0';n.textContent='🟢 已更新';}
+ }catch(e){
+  body.innerHTML='<tr><td colspan="4" style="color:var(--red)">❌ '+escHtml(e.message)+'</td></tr>';
+  if(!silent&&tim)tim.textContent='❌ 載入失敗';
+ }
+}
+
+function escHtml(s){
+ let d=document.createElement('div');
+ d.textContent=s;
+ return d.innerHTML;
+}
+
+// ─── Init ───
+let tb=document.getElementById('tabs');
+for(let i=0;i<RBT.length;i++){
+ let b=document.createElement('button');
+ b.className='tbb'+(i===0?' on':'');
+ b.textContent=RBT[i].ic+' '+RBT[i].nm;
+ b.onclick=(function(idx){return function(){document.querySelectorAll('.tbb').forEach(t=>t.classList.remove('on'));document.querySelectorAll('.tab').forEach(t=>t.classList.remove('on'));this.classList.add('on');let tp=document.getElementById('p'+idx);if(tp)tp.classList.add('on');rd(idx);};})(i);
+ tb.appendChild(b);
+}
+rd(0);rd(1);rd(2);let p0=document.getElementById('p0');if(p0)p0.classList.add('on');
+ck();setInterval(ck,1000);
+fetch(A+'/sentinels').then(r=>r.json()).then(d=>{let c=document.getElementById('cnt0');if(c&&d)c.textContent=d.length+' 個哨兵';}).catch(()=>{});
+fetch(A+'/sentinels?type=sector_rotation').then(r=>r.json()).then(d=>{let c=document.getElementById('rotCnt');if(c&&d)c.textContent=d.length+' rotation';}).catch(()=>{});
+fetch(A+'/sentinels?type=lt').then(r=>r.json()).then(d=>{let c=document.getElementById('ltCnt');if(c&&d)c.textContent='LT:'+d.length;}).catch(()=>{});
+fetch(A+'/sentinels?type=st').then(r=>r.json()).then(d=>{let c=document.getElementById('stCnt');if(c&&d)c.textContent='ST:'+d.length;}).catch(()=>{});
+</script>
+</body>
+</html>

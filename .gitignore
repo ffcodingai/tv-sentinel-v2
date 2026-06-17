@@ -1,0 +1,9 @@
+node_modules/
+*.db
+*.db-journal
+*.db-wal
+*.db.corrupt.bak
+*.log
+/tmp/
+.env
+backtest/
