@@ -1,226 +1,133 @@
 #!/usr/bin/env node
 /**
  * backtest/data-provider.js
- * Unified entry point for LT/ST executors to load backtest data.
+ * Unified entry point — loads backtest data via DB-indexed file paths.
  *
  * Usage:
- *   node backtest/data-provider.js --backtest-id=test001 --at="2026-06-14 09:30"
+ *   node backtest/data-provider.js --backtest-id=<id> --at="2026-06-14 09:30"
  *
- * When --at is provided with --backtest-id:
- *   - rotation: loads backtest/<id>/sector-rotation-ui-<closest-ts>.json
- *   - volume:   loads backtest/<id>/volume-surge-<closest-ts>.json
- *   - index:    loads backtest/<id>/composite-index-<closest-ts>.json
- *   - resistance: loads backtest/<id>/resistance-<date>.json
+ * Backtest mode (with --backtest-id):
+ *   - Looks up file paths from DB (backtest_runs.snapshots column)
+ *   - Loads the closest matching snapshot file
  *
- * When --at is null/omitted: reads live files from /tmp/.
+ * Live mode (no --backtest-id):
+ *   - Reads from /tmp/ files directly
  */
 
 const fs = require('fs');
-const path = require('path');
+const { initDatabase, getDb } = require('../database');
 
 // ── CLI args ────────────────────────────────────────────────────────────────
 const args = {};
 process.argv.slice(2).forEach(arg => {
-  const match = arg.match(/^--([^=]+)=(.+)$/);
-  if (match) args[match[1]] = match[2];
+  const m = arg.match(/^--([^=]+)=(.+)$/);
+  if (m) args[m[1]] = m[2];
 });
 
 const BACKTEST_ID = args['backtest-id'] || null;
-const AT_TIME     = args['at'] || null; // "2026-06-14 09:30"
+const AT_TIME     = args['at'] || null;
+const AT_DATE     = AT_TIME ? AT_TIME.split(' ')[0] : null;
 
-// ── Helpers ─────────────────────────────────────────────────────────────────
+// ── DB helper ───────────────────────────────────────────────────────────────
+initDatabase();
 
-const BACKTEST_DIR = BACKTEST_ID ? path.join(__dirname, BACKTEST_ID) : null;
-const AT_DATE      = AT_TIME ? AT_TIME.split(' ')[0] : null; // "2026-06-14"
+function loadSnapshotFile(runId, dataType, timestamp) {
+  const row = getDb().prepare('SELECT * FROM backtest_runs WHERE id = ?').get(runId);
+  if (!row) return null;
+  let snapshots;
+  try { snapshots = JSON.parse(row.snapshots); } catch { snapshots = {}; }
 
-function formatTs(d) {
-  const Y = d.getFullYear();
-  const M = String(d.getMonth() + 1).padStart(2, '0');
-  const D = String(d.getDate()).padStart(2, '0');
-  const h = String(d.getHours()).padStart(2, '0');
-  const m = String(d.getMinutes()).padStart(2, '0');
-  const s = String(d.getSeconds()).padStart(2, '0');
-  return `${Y}-${M}-${D} ${h}:${m}:${s}`;
-}
+  const typeMap = snapshots[dataType];
+  if (!typeMap) return null;
 
-// Find the file with the closest timestamp ≤ AT_TIME
-function findClosestFile(prefix) {
-  if (!BACKTEST_DIR || !fs.existsSync(BACKTEST_DIR)) return null;
-  const files = fs.readdirSync(BACKTEST_DIR)
-    .filter(f => f.startsWith(prefix) && f.endsWith('.json'))
-    .sort();
-
-  if (files.length === 0) return null;
-
-  // Files are named: prefix-YYYY-MM-DD HH:mm:ss.json
-  // Find the closest one ≤ AT_TIME
-  const atMs = new Date(AT_TIME).getTime();
-  let bestFile = null;
-  let bestDiff = Infinity;
-
-  for (const f of files) {
-    // Extract timestamp from filename after prefix
-    const tsPart = f.slice(prefix.length + 1, -5); // remove "prefix-" and ".json"
-    const tsMs = new Date(tsPart).getTime();
-    if (isNaN(tsMs)) continue;
-    const diff = atMs - tsMs;
+  // Find closest timestamp ≤ requested timestamp
+  const keys = Object.keys(typeMap).sort();
+  let bestKey = null, bestDiff = Infinity;
+  const atMs = new Date(timestamp).getTime();
+  for (const k of keys) {
+    const kMs = new Date(k).getTime();
+    if (isNaN(kMs)) continue;
+    const diff = atMs - kMs;
     if (diff >= 0 && diff < bestDiff) {
       bestDiff = diff;
-      bestFile = f;
+      bestKey = k;
     }
   }
+  // Fallback: earliest if nothing before
+  if (!bestKey && keys.length > 0) bestKey = keys[0];
+  if (!bestKey) return null;
 
-  // If nothing before atMs, take the earliest
-  if (!bestFile && files.length > 0) {
-    bestFile = files[0];
+  const filePath = typeMap[bestKey];
+  try { return JSON.parse(fs.readFileSync(filePath, 'utf-8')); }
+  catch { return null; }
+}
+
+function loadResistanceFile(runId, dateStr) {
+  const row = getDb().prepare('SELECT * FROM backtest_runs WHERE id = ?').get(runId);
+  if (!row) return null;
+  let snapshots;
+  try { snapshots = JSON.parse(row.snapshots); } catch { snapshots = {}; }
+  const typeMap = snapshots['resistance'];
+  if (!typeMap) return null;
+
+  // Look for exact date or closest
+  const keys = Object.keys(typeMap).sort();
+  let bestKey = null;
+  for (const k of keys) {
+    if (k.startsWith(dateStr)) { bestKey = k; break; }
   }
+  if (!bestKey && keys.length > 0) bestKey = keys[keys.length - 1];
+  if (!bestKey) return null;
 
-  return bestFile ? path.join(BACKTEST_DIR, bestFile) : null;
+  const filePath = typeMap[bestKey];
+  try { return JSON.parse(fs.readFileSync(filePath, 'utf-8')); }
+  catch { return null; }
 }
 
-// Find resistance file for a given date
-function findResistanceFile(dateStr) {
-  if (!BACKTEST_DIR || !fs.existsSync(BACKTEST_DIR)) return null;
-  const f = `resistance-${dateStr}.json`;
-  const fp = path.join(BACKTEST_DIR, f);
-  return fs.existsSync(fp) ? fp : null;
-}
-
-// ── Sleeper (temporary file watches for live mode) ──────────────────────────
-const LIVE_FILES = [
-  { prefix: 'sector-rotation-ui', path: '/tmp/sector-rotation-ui.json' },
-  { prefix: 'volume-surge',       path: '/tmp/volume-surge-segments.json' },
-  { prefix: 'composite-index',    path: '/tmp/composite-index-data.json' },
-];
-
-function readLiveOrEmpty(filePath) {
-  try {
-    const raw = fs.readFileSync(filePath, 'utf-8');
-    return JSON.parse(raw);
-  } catch {
-    return null;
-  }
-}
-
-// ── Public API (exported for programmatic use) ──────────────────────────────
+// ── Public API ──────────────────────────────────────────────────────────────
 
 const dataProvider = {
-  /**
-   * Get rotation data.
-   * @param {string|null} atTime  - Timestamp or null for live
-   * @param {string|null} backtestId
-   * @returns {object|null}
-   */
   getRotationData(atTime, backtestId) {
-    const bd = backtestId ? path.join(__dirname, backtestId) : null;
-    if (atTime && bd) {
-      const file = findClosestFileInDir('sector-rotation-ui', atTime, bd);
-      if (!file) return null;
-      return JSON.parse(fs.readFileSync(file, 'utf-8'));
-    }
-    return readLiveOrEmpty('/tmp/sector-rotation-ui.json');
+    if (atTime && backtestId) return loadSnapshotFile(backtestId, 'rotation', atTime);
+    try { return JSON.parse(fs.readFileSync('/tmp/sector-rotation-ui.json', 'utf-8')); } catch { return null; }
   },
 
-  /**
-   * Get volume surge data.
-   */
   getVolumeSurge(atTime, backtestId) {
-    const bd = backtestId ? path.join(__dirname, backtestId) : null;
-    if (atTime && bd) {
-      const file = findClosestFileInDir('volume-surge', atTime, bd);
-      if (!file) return null;
-      return JSON.parse(fs.readFileSync(file, 'utf-8'));
-    }
-    return readLiveOrEmpty('/tmp/volume-surge-segments.json');
+    if (atTime && backtestId) return loadSnapshotFile(backtestId, 'volume_surge', atTime);
+    try { return JSON.parse(fs.readFileSync('/tmp/volume-surge-segments.json', 'utf-8')); } catch { return null; }
   },
 
-  /**
-   * Get composite index data.
-   */
   getIndexData(atTime, backtestId) {
-    const bd = backtestId ? path.join(__dirname, backtestId) : null;
-    if (atTime && bd) {
-      const file = findClosestFileInDir('composite-index', atTime, bd);
-      if (!file) return null;
-      return JSON.parse(fs.readFileSync(file, 'utf-8'));
-    }
-    return readLiveOrEmpty('/tmp/composite-index-data.json');
+    if (atTime && backtestId) return loadSnapshotFile(backtestId, 'composite_index', atTime);
+    // Live: try localhost:3334 (original behavior preserved by executors)
+    return null;
   },
 
-  /**
-   * Get resistance data for a specific date.
-   * @param {string} dateStr - YYYY-MM-DD
-   */
   getResistanceData(dateStr, backtestId) {
-    const bd = backtestId ? path.join(__dirname, backtestId) : null;
-    if (dateStr && bd) {
-      const file = path.join(bd, `resistance-${dateStr}.json`);
-      if (!fs.existsSync(file)) return null;
-      return JSON.parse(fs.readFileSync(file, 'utf-8'));
-    }
-    return readLiveOrEmpty('/tmp/stock-resistance.json');
+    if (dateStr && backtestId) return loadResistanceFile(backtestId, dateStr);
+    return null;
   },
 };
 
-// ── Internal helper (needed since this is a dual standalone/lib module) ─────
-function findClosestFileInDir(prefix, atTime, dir) {
-  if (!dir || !fs.existsSync(dir)) return null;
-  const files = fs.readdirSync(dir)
-    .filter(f => f.startsWith(prefix) && f.endsWith('.json'))
-    .sort();
-
-  if (files.length === 0) return null;
-
-  const atMs = new Date(atTime).getTime();
-  let bestFile = null;
-  let bestDiff = Infinity;
-
-  for (const f of files) {
-    const tsPart = f.slice(prefix.length + 1, -5);
-    const tsMs = new Date(tsPart).getTime();
-    if (isNaN(tsMs)) continue;
-    const diff = atMs - tsMs;
-    if (diff >= 0 && diff < bestDiff) {
-      bestDiff = diff;
-      bestFile = f;
-    }
-  }
-
-  if (!bestFile) bestFile = files[0];
-  return path.join(dir, bestFile);
-}
-
 // ── CLI mode ────────────────────────────────────────────────────────────────
 if (require.main === module) {
-  (function runCLI() {
-    console.log(`\n=== Data Provider ===`);
-    console.log(`backtest-id: ${BACKTEST_ID || '(none)'}`);
-    console.log(`at:         ${AT_TIME || '(live)'}\n`);
+  console.log(`\n=== Data Provider ===`);
+  console.log(`backtest-id: ${BACKTEST_ID || '(none)'}`);
+  console.log(`at:         ${AT_TIME || '(live)'}\n`);
 
-    // Rotation
-    const rotation = dataProvider.getRotationData(AT_TIME, BACKTEST_ID);
-    console.log(`Rotation: ${rotation ? `✓ ${Object.keys(rotation.countries || {}).length} countries` : '✗ not found'}`);
+  const rotation = dataProvider.getRotationData(AT_TIME, BACKTEST_ID);
+  console.log(`Rotation: ${rotation ? `✓ ${Object.keys(rotation.countries || {}).length} countries` : '✗ not found'}`);
 
-    // Volume
-    const volume = dataProvider.getVolumeSurge(AT_TIME, BACKTEST_ID);
-    console.log(`Volume:   ${volume ? `✓ ${volume.segments?.length || 0} segments` : '✗ not found'}`);
+  const volume = dataProvider.getVolumeSurge(AT_TIME, BACKTEST_ID);
+  console.log(`Volume:   ${volume ? `✓ ${volume.segments?.length || 0} segments` : '✗ not found'}`);
 
-    // Index
-    const index = dataProvider.getIndexData(AT_TIME, BACKTEST_ID);
-    console.log(`Index:    ${index ? `✓ compIdx=${index.compositeIndex?.length || 0} spread=${index.spreadRecords?.length || 0} segs=${index.segments?.length || 0}` : '✗ not found'}`);
+  const index = dataProvider.getIndexData(AT_TIME, BACKTEST_ID);
+  console.log(`Index:    ${index ? '✓ found' : '✗ not found'}`);
 
-    // Resistance
-    const resistance = dataProvider.getResistanceData(AT_DATE, BACKTEST_ID);
-    if (resistance) {
-      const marketCount = Object.keys(resistance.data?.markets || {}).length;
-      const totalStocks = resistance.data?.totals?.reduce((s, t) => s + t.count, 0) || 0;
-      console.log(`Resistance: ✓ ${marketCount} markets, ${totalStocks} stocks`);
-    } else {
-      console.log(`Resistance: ✗ not found`);
-    }
+  const resistance = dataProvider.getResistanceData(AT_DATE, BACKTEST_ID);
+  console.log(`Resistance: ${resistance ? '✓ found' : '✗ not found'}`);
 
-    console.log(`\nDone.`);
-  })();
+  console.log(`\nDone.`);
 }
 
 module.exports = dataProvider;

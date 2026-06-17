@@ -1,134 +1,93 @@
 #!/usr/bin/env node
 /**
  * backtest/fetch-volume.js
- * Reads Kafka topic t_signal_info_data for vol_agg type messages
- * and writes volume-surge segment files per timestamp.
+ * Kafka vol_agg → volume-surge JSON files + DB registration.
  *
  * Usage:
- *   node backtest/fetch-volume.js --backtest-id=test001 --from=2026-06-01T00:00:00 --to=2026-06-17T00:00:00
+ *   NODE_PATH=~/tradingview-ui-backend-dev/node_modules \\
+ *   node backtest/fetch-volume.js --backtest-id=<id> --from=ISO --to=ISO
  */
 
 const { Kafka } = require('kafkajs');
 const fs = require('fs');
 const path = require('path');
+const { initDatabase } = require('../database');
+const { regSnapshot } = require('./db-util');
 
-// ── CLI args ────────────────────────────────────────────────────────────────
+initDatabase();
+
 const args = {};
-process.argv.slice(2).forEach(arg => {
-  const match = arg.match(/^--([^=]+)=(.+)$/);
-  if (match) args[match[1]] = match[2];
-});
-
+process.argv.slice(2).forEach(a => { const m = a.match(/^--([^=]+)=(.+)$/); if (m) args[m[1]] = m[2]; });
 const BACKTEST_ID = args['backtest-id'];
 const FROM_ISO = args['from'];
-const TO_ISO   = args['to'];
-
+const TO_ISO = args['to'];
 if (!BACKTEST_ID || !FROM_ISO || !TO_ISO) {
-  console.error('Usage: node fetch-volume.js --backtest-id=ID --from=ISO --to=ISO');
-  process.exit(1);
+  console.error('Usage: node fetch-volume.js --backtest-id=ID --from=ISO --to=ISO'); process.exit(1);
 }
 
-const FROM_MS = new Date(FROM_ISO).getTime();
-const TO_MS   = new Date(TO_ISO).getTime();
-const OUT_DIR = path.join(__dirname, BACKTEST_ID);
-
-// ── Kafka setup ─────────────────────────────────────────────────────────────
 const BROKERS = ['192.168.25.148:9092', '192.168.25.148:9093', '192.168.25.148:9094'];
-const TOPIC   = 't_signal_info_data';
+const TOPIC = 't_signal_info_data';
 
-const kafka = new Kafka({
-  clientId: `backtest-volume-${BACKTEST_ID}`,
-  brokers: BROKERS,
-  retry: { retries: 3 },
-});
+const kafka = new Kafka({ clientId: `bt-volume-${BACKTEST_ID}`, brokers: BROKERS, retry: { retries: 3 } });
 
-// ── Main ────────────────────────────────────────────────────────────────────
 async function main() {
-  fs.mkdirSync(OUT_DIR, { recursive: true });
+  const snapDir = path.join(__dirname, BACKTEST_ID, 'snapshots');
+  fs.mkdirSync(snapDir, { recursive: true });
 
-  const consumer = kafka.consumer({ groupId: `backtest-volume-${BACKTEST_ID}-${Date.now()}` });
+  const consumer = kafka.consumer({ groupId: `bt-volume-${BACKTEST_ID}-${Date.now()}` });
   await consumer.connect();
   await consumer.subscribe({ topic: TOPIC, fromBeginning: true });
 
-  // Buffer messages keyed by tsFm
-  const buffer = new Map(); // tsFm → segments array
+  const buffer = new Map(); // tsFm → { segments, data }
 
   await consumer.run({
     eachMessage: async ({ message }) => {
-      const value = message.value ? message.value.toString() : '';
-      if (!value) return;
-
-      const parts = value.split('|');
-      if (parts.length < 7) return;
-
-      const tsFm   = parts[0];
-      const tsTo   = parts[1];
-      const type   = parts[2];
-      const sym    = parts[3];
-      const sigKey = parts[4];
-      const jData  = parts.slice(5, -2).join('|');
-      const timeSync = parts[parts.length - 2];
-      const interval = parts[parts.length - 1];
-
-      if (type !== 'vol_agg') return;
-      if (sym !== 'vol_rate_agg') return;
-
+      const v = message.value ? message.value.toString() : '';
+      if (!v) return;
+      const p = v.split('|');
+      if (p.length < 7) return;
+      const tsFm = p[0], tsTo = p[1], type = p[2], sym = p[3];
+      const jData = p.slice(5, -2).join('|');
       const tsMs = parseInt(tsFm, 10);
       if (isNaN(tsMs)) return;
-      if (tsMs < FROM_MS || tsMs > TO_MS) return;
+      const dt = new Date(tsMs);
+      if (dt < new Date(FROM_ISO) || dt > new Date(TO_ISO)) return;
+      if (type !== 'vol_agg' || sym !== 'vol_rate_agg') return;
 
       let parsed;
-      try {
-        parsed = JSON.parse(jData);
-      } catch {
-        return;
-      }
-
-      if (!Array.isArray(parsed)) return;
-
-      if (!buffer.has(tsFm)) buffer.set(tsFm, { tsFm, segments: [], timeSync, interval, tsMs });
-      buffer.get(tsFm).segments.push(...parsed);
+      try { parsed = JSON.parse(jData); } catch { return; }
+      buffer.set(tsFm, { tsFm, tsMs, data: parsed });
     },
   });
 
-  // Drain
-  await new Promise(r => setTimeout(r, 5000));
+  await new Promise(r => setTimeout(r, 3000));
   await consumer.disconnect();
 
-  console.log(`Consumed ${buffer.size} unique timestamps with vol_agg data.`);
+  console.log(`Consumed ${buffer.size} volume snapshots.`);
 
-  // ── Write per-timestamp files ─────────────────────────────────────────────
-  const sortedTs = [...buffer.keys()].sort((a, b) => parseInt(a, 10) - parseInt(b, 10));
+  const sorted = [...buffer.keys()].sort((a, b) => parseInt(a) - parseInt(b));
+  let written = 0;
 
-  for (const tsFm of sortedTs) {
+  for (const tsFm of sorted) {
     const entry = buffer.get(tsFm);
-    if (!entry.segments.length) continue;
+    const dt = new Date(entry.tsMs);
+    const tsLabel = dt.toISOString().replace('T', ' ').substring(0, 19);
+    const fileName = `volume-surge-${tsLabel}.json`;
+    const outFile = path.join(snapDir, fileName);
 
-    const dt = new Date(parseInt(tsFm, 10));
-    const tsLabel = formatTs(dt);
-
-    const outFile = path.join(OUT_DIR, `volume-surge-${tsLabel}.json`);
     const output = {
       generatedAt: tsLabel,
-      segments: entry.segments,
+      segments: entry.data.segments || [],
+      timestamp: tsLabel,
     };
 
-    fs.writeFileSync(outFile, JSON.stringify(output, null, 2), 'utf-8');
-    console.log(`  Wrote ${outFile} (${entry.segments.length} segments)`);
+    fs.writeFileSync(outFile, JSON.stringify(output, null, 2));
+    regSnapshot(BACKTEST_ID, 'volume_surge', tsLabel, fileName);
+    written++;
+    console.log(`  [${tsLabel}] ${output.segments.length} segments → ${fileName}`);
   }
+
+  console.log(`\nDone: ${written} volume snapshots written to ${snapDir}`);
 }
 
-function formatTs(d) {
-  const Y = d.getFullYear();
-  const M = String(d.getMonth() + 1).padStart(2, '0');
-  const D = String(d.getDate()).padStart(2, '0');
-  const h = String(d.getHours()).padStart(2, '0');
-  const m = String(d.getMinutes()).padStart(2, '0');
-  const s = String(d.getSeconds()).padStart(2, '0');
-  return `${Y}-${M}-${D} ${h}:${m}:${s}`;
-}
-
-main().catch(err => {
-  console.error('Fatal error:', err);
-  process.exit(1);
-});
+main().catch(e => { console.error('Fatal:', e.message); process.exit(1); });

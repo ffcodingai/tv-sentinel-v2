@@ -78,6 +78,22 @@ function createTables() {
       created_at  TEXT DEFAULT (datetime('now','localtime'))
     )
   `);
+
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS backtest_runs (
+      id          TEXT PRIMARY KEY,
+      name        TEXT DEFAULT '',
+      from_time   TEXT,
+      to_time     TEXT,
+      interval    TEXT DEFAULT '1h',
+      status      TEXT DEFAULT 'pending',
+      config      TEXT DEFAULT '{}',
+      snapshots   TEXT DEFAULT '{}',
+      results     TEXT DEFAULT '{}',
+      created_at  TEXT DEFAULT (datetime('now','localtime')),
+      updated_at  TEXT DEFAULT (datetime('now','localtime'))
+    )
+  `);
 }
 
 function initDatabase() {
@@ -239,6 +255,62 @@ function closeDatabase() {
   if (db) db.close();
 }
 
+// ── Backtest Runs ──
+
+function createBacktestRun({ name, from_time, to_time, interval, config }) {
+  const id = crypto.randomUUID();
+  db.prepare(`
+    INSERT INTO backtest_runs (id, name, from_time, to_time, interval, config)
+    VALUES (?, ?, ?, ?, ?, ?)
+  `).run(id, name || '', from_time || '', to_time || '', interval || '1h', JSON.stringify(config || {}));
+  return getBacktestRun(id);
+}
+
+function getBacktestRun(id) {
+  const r = db.prepare('SELECT * FROM backtest_runs WHERE id = ?').get(id);
+  if (!r) return null;
+  return { ...r, config: safeJson(r.config), snapshots: safeJson(r.snapshots), results: safeJson(r.results) };
+}
+
+function listBacktestRuns(limit = 20) {
+  return db.prepare('SELECT * FROM backtest_runs ORDER BY created_at DESC LIMIT ?').all(limit);
+}
+
+function updateBacktestRun(id, fields) {
+  const allowed = ['name', 'status', 'config', 'snapshots', 'results'];
+  const sets = [];
+  const vals = [];
+  for (const k of allowed) {
+    if (fields[k] !== undefined) {
+      sets.push(`${k} = ?`);
+      vals.push(typeof fields[k] === 'object' ? JSON.stringify(fields[k]) : fields[k]);
+    }
+  }
+  if (sets.length === 0) return getBacktestRun(id);
+  sets.push("updated_at = datetime('now','localtime')");
+  vals.push(id);
+  db.prepare(`UPDATE backtest_runs SET ${sets.join(', ')} WHERE id = ?`).run(...vals);
+  return getBacktestRun(id);
+}
+
+function registerSnapshot(runId, dataType, timestamp, filePath) {
+  const run = getBacktestRun(runId);
+  if (!run) return null;
+  const snapshots = run.snapshots;
+  if (!snapshots[dataType]) snapshots[dataType] = {};
+  snapshots[dataType][timestamp] = filePath;
+  return updateBacktestRun(runId, { snapshots });
+}
+
+function registerResult(runId, sentinelType, timestamp, filePath) {
+  const run = getBacktestRun(runId);
+  if (!run) return null;
+  const results = run.results;
+  if (!results[sentinelType]) results[sentinelType] = {};
+  results[sentinelType][timestamp] = filePath;
+  return updateBacktestRun(runId, { results });
+}
+
 module.exports = {
   initDatabase, getDb, closeDatabase,
   getAllSentinels, getSentinel, createSentinel, updateSentinel, deleteSentinel,
@@ -247,4 +319,6 @@ module.exports = {
   getMarketStates, setMarketState,
   addDataAssignment, getDataAssignments,
   getStats,
+  createBacktestRun, getBacktestRun, listBacktestRuns,
+  updateBacktestRun, registerSnapshot, registerResult,
 };

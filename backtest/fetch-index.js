@@ -1,157 +1,117 @@
 #!/usr/bin/env node
 /**
  * backtest/fetch-index.js
- * Reads Kafka topic t_signal_info_data for global_spread type messages
- * and writes composite-index files per timestamp.
+ * Kafka global_spread_agg → composite-index JSON files + DB registration.
  *
  * Usage:
- *   node backtest/fetch-index.js --backtest-id=test001 --from=2026-06-01T00:00:00 --to=2026-06-17T00:00:00
+ *   NODE_PATH=~/tradingview-ui-backend-dev/node_modules \\
+ *   node backtest/fetch-index.js --backtest-id=<id> --from=ISO --to=ISO
  */
 
 const { Kafka } = require('kafkajs');
 const fs = require('fs');
 const path = require('path');
+const { initDatabase } = require('../database');
+const { regSnapshot } = require('./db-util');
 
-// ── CLI args ────────────────────────────────────────────────────────────────
+initDatabase();
+
 const args = {};
-process.argv.slice(2).forEach(arg => {
-  const match = arg.match(/^--([^=]+)=(.+)$/);
-  if (match) args[match[1]] = match[2];
-});
-
+process.argv.slice(2).forEach(a => { const m = a.match(/^--([^=]+)=(.+)$/); if (m) args[m[1]] = m[2]; });
 const BACKTEST_ID = args['backtest-id'];
 const FROM_ISO = args['from'];
-const TO_ISO   = args['to'];
-
+const TO_ISO = args['to'];
 if (!BACKTEST_ID || !FROM_ISO || !TO_ISO) {
-  console.error('Usage: node fetch-index.js --backtest-id=ID --from=ISO --to=ISO');
-  process.exit(1);
+  console.error('Usage: node fetch-index.js --backtest-id=ID --from=ISO --to=ISO'); process.exit(1);
 }
 
-const FROM_MS = new Date(FROM_ISO).getTime();
-const TO_MS   = new Date(TO_ISO).getTime();
-const OUT_DIR = path.join(__dirname, BACKTEST_ID);
-
-// ── Kafka setup ─────────────────────────────────────────────────────────────
 const BROKERS = ['192.168.25.148:9092', '192.168.25.148:9093', '192.168.25.148:9094'];
-const TOPIC   = 't_signal_info_data';
+const TOPIC = 't_signal_info_data';
 
-const kafka = new Kafka({
-  clientId: `backtest-index-${BACKTEST_ID}`,
-  brokers: BROKERS,
-  retry: { retries: 3 },
-});
+const kafka = new Kafka({ clientId: `bt-index-${BACKTEST_ID}`, brokers: BROKERS, retry: { retries: 3 } });
 
-// ── Main ────────────────────────────────────────────────────────────────────
 async function main() {
-  fs.mkdirSync(OUT_DIR, { recursive: true });
+  const snapDir = path.join(__dirname, BACKTEST_ID, 'snapshots');
+  fs.mkdirSync(snapDir, { recursive: true });
 
-  const consumer = kafka.consumer({ groupId: `backtest-index-${BACKTEST_ID}-${Date.now()}` });
+  const consumer = kafka.consumer({ groupId: `bt-index-${BACKTEST_ID}-${Date.now()}` });
   await consumer.connect();
   await consumer.subscribe({ topic: TOPIC, fromBeginning: true });
 
-  // Buffer messages keyed by tsFm
-  const buffer = new Map(); // tsFm → { compositeIndex, spreadRecords, segments }
+  const buffer = new Map(); // tsFm → { compositeIndex, spreadRecords, segments, composite, indexData }
 
   await consumer.run({
     eachMessage: async ({ message }) => {
-      const value = message.value ? message.value.toString() : '';
-      if (!value) return;
-
-      const parts = value.split('|');
-      if (parts.length < 7) return;
-
-      const tsFm   = parts[0];
-      const tsTo   = parts[1];
-      const type   = parts[2];
-      const sym    = parts[3];
-      const sigKey = parts[4];
-      const jData  = parts.slice(5, -2).join('|');
-      const timeSync = parts[parts.length - 2];
-      const interval = parts[parts.length - 1];
-
-      if (type !== 'global_spread') return;
-      if (sym !== 'global_spread_agg') return;
-
+      const v = message.value ? message.value.toString() : '';
+      if (!v) return;
+      const p = v.split('|');
+      if (p.length < 7) return;
+      const tsFm = p[0], type = p[2], sym = p[3];
+      const jData = p.slice(5, -2).join('|');
       const tsMs = parseInt(tsFm, 10);
       if (isNaN(tsMs)) return;
-      if (tsMs < FROM_MS || tsMs > TO_MS) return;
+      const dt = new Date(tsMs);
+      if (dt < new Date(FROM_ISO) || dt > new Date(TO_ISO)) return;
+      if (type !== 'global_spread' || sym !== 'global_spread_agg') return;
 
       let parsed;
-      try {
-        parsed = JSON.parse(jData);
-      } catch {
-        return;
-      }
+      try { parsed = JSON.parse(jData); } catch { return; }
 
-      if (!buffer.has(tsFm)) {
-        buffer.set(tsFm, {
-          tsFm, tsMs,
-          compositeIndex: [],
-          spreadRecords: [],
-          segments: [],
-          timeSync, interval,
-        });
-      }
-
-      const entry = buffer.get(tsFm);
-
-      // Merge fields — the JSON structure may carry any subset
-      if (Array.isArray(parsed.compositeIndex)) {
-        entry.compositeIndex.push(...parsed.compositeIndex);
-      }
-      if (Array.isArray(parsed.spreadRecords)) {
-        entry.spreadRecords.push(...parsed.spreadRecords);
-      }
-      if (Array.isArray(parsed.segments)) {
-        entry.segments.push(...parsed.segments);
-      }
-
-      // If the top level IS an array or has no named fields, treat whole JSON as segments
-      if (Array.isArray(parsed)) {
-        entry.segments.push(...parsed);
-      }
+      // Build a format compatible with what localhost:3334/api/data would return
+      const entry = {
+        tsFm,
+        tsMs,
+        compositeIndex: parsed.compositeIndex || [],
+        spreadRecords: parsed.spreadRecords || [],
+        segments: parsed.segments || [],
+        // Also build the .composite array format that executor.js uses for fetchIndexDirection
+        composite: (parsed.compositeIndex || []).map((pt, i) => ({
+          value: typeof pt === 'number' ? pt : (pt.value || 0),
+          time: pt.time || (tsMs - (parsed.compositeIndex.length - 1 - i) * 300000),
+        })),
+        // Build indexData format used by calcSlope
+        indexData: (parsed.compositeIndex || []).map((pt) => ({
+          value: typeof pt === 'number' ? pt : (pt.value || 0),
+          time: pt.time || tsMs,
+        })),
+        // Turnpoints (if available in parsed data)
+        turnpoints: parsed.turnpoints || parsed.H35H36 || null,
+      };
+      buffer.set(tsFm, entry);
     },
   });
 
-  // Drain
-  await new Promise(r => setTimeout(r, 5000));
+  await new Promise(r => setTimeout(r, 3000));
   await consumer.disconnect();
 
-  console.log(`Consumed ${buffer.size} unique timestamps with global_spread data.`);
+  console.log(`Consumed ${buffer.size} index snapshots.`);
 
-  // ── Write per-timestamp files ─────────────────────────────────────────────
-  const sortedTs = [...buffer.keys()].sort((a, b) => parseInt(a, 10) - parseInt(b, 10));
+  const sorted = [...buffer.keys()].sort((a, b) => parseInt(a) - parseInt(b));
+  let written = 0;
 
-  for (const tsFm of sortedTs) {
+  for (const tsFm of sorted) {
     const entry = buffer.get(tsFm);
-    const dt = new Date(parseInt(tsFm, 10));
-    const tsLabel = formatTs(dt);
+    const dt = new Date(entry.tsMs);
+    const tsLabel = dt.toISOString().replace('T', ' ').substring(0, 19);
+    const fileName = `composite-index-${tsLabel}.json`;
+    const outFile = path.join(snapDir, fileName);
 
-    const outFile = path.join(OUT_DIR, `composite-index-${tsLabel}.json`);
     const output = {
       generatedAt: tsLabel,
+      composite: entry.composite,
+      indexData: entry.indexData,
       compositeIndex: entry.compositeIndex,
       spreadRecords: entry.spreadRecords,
       segments: entry.segments,
+      turnpoints: entry.turnpoints,
     };
 
-    fs.writeFileSync(outFile, JSON.stringify(output, null, 2), 'utf-8');
-    console.log(`  Wrote ${outFile} (compIdx=${entry.compositeIndex.length}, spread=${entry.spreadRecords.length}, segs=${entry.segments.length})`);
+    fs.writeFileSync(outFile, JSON.stringify(output, null, 2));
+    regSnapshot(BACKTEST_ID, 'composite_index', tsLabel, fileName);
+    written++;
   }
+
+  console.log(`\nDone: ${written} index snapshots written to ${snapDir}`);
 }
 
-function formatTs(d) {
-  const Y = d.getFullYear();
-  const M = String(d.getMonth() + 1).padStart(2, '0');
-  const D = String(d.getDate()).padStart(2, '0');
-  const h = String(d.getHours()).padStart(2, '0');
-  const m = String(d.getMinutes()).padStart(2, '0');
-  const s = String(d.getSeconds()).padStart(2, '0');
-  return `${Y}-${M}-${D} ${h}:${m}:${s}`;
-}
-
-main().catch(err => {
-  console.error('Fatal error:', err);
-  process.exit(1);
-});
+main().catch(e => { console.error('Fatal:', e.message); process.exit(1); });

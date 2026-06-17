@@ -1,187 +1,100 @@
 #!/usr/bin/env node
 /**
  * backtest/fetch-resistance.js
- * Uses HTTP API to query stock resistance/support for all markets on a given date.
+ * HTTP API → historical resistance/support data + DB registration.
  *
  * Usage:
- *   node backtest/fetch-resistance.js --backtest-id=test001 --date=2026-06-14
+ *   node backtest/fetch-resistance.js --backtest-id=<id> --date=2026-06-14
  */
 
 const fs = require('fs');
 const path = require('path');
 const http = require('http');
+const { initDatabase } = require('../database');
+const { regSnapshot } = require('./db-util');
 
-// ── CLI args ────────────────────────────────────────────────────────────────
+initDatabase();
+
 const args = {};
-process.argv.slice(2).forEach(arg => {
-  const match = arg.match(/^--([^=]+)=(.+)$/);
-  if (match) args[match[1]] = match[2];
-});
-
+process.argv.slice(2).forEach(a => { const m = a.match(/^--([^=]+)=(.+)$/); if (m) args[m[1]] = m[2]; });
 const BACKTEST_ID = args['backtest-id'];
-const DATE_STR    = args['date'];
-
+const DATE_STR = args['date'];
 if (!BACKTEST_ID || !DATE_STR) {
-  console.error('Usage: node fetch-resistance.js --backtest-id=ID --date=YYYY-MM-DD');
-  process.exit(1);
+  console.error('Usage: node fetch-resistance.js --backtest-id=ID --date=YYYY-MM-DD'); process.exit(1);
 }
 
-const OUT_DIR = path.join(__dirname, BACKTEST_ID);
-
-// ── Config ──────────────────────────────────────────────────────────────────
 const API_BASE = 'http://192.168.25.190:3000';
-const MARKETS   = ['china', 'hongkong', 'japan', 'korea', 'taiwan', 'uk', 'france', 'germany', 'america'];
-const MARKET_REQ_MAP = {
-  china:    'china',
-  hongkong: 'hongkong',
-  japan:    'japan',
-  korea:    'korea',
-  taiwan:   'taiwan',
-  uk:       'uk',
-  france:   'france',
-  germany:  'germany',
-  america:  'america',
-};
+const MARKETS = ['china','hongkong','japan','korea','taiwan','uk','france','germany','america'];
 
-// ── HTTP helpers ────────────────────────────────────────────────────────────
 function httpGet(url) {
   return new Promise((resolve, reject) => {
-    http.get(url, (res) => {
-      let data = '';
-      res.on('data', chunk => data += chunk);
-      res.on('end', () => {
-        if (res.statusCode < 200 || res.statusCode >= 300) {
-          reject(new Error(`HTTP ${res.statusCode}: ${url}`));
-          return;
-        }
-        try { resolve(JSON.parse(data)); }
-        catch (e) { reject(new Error(`JSON parse error for ${url}: ${e.message}`)); }
-      });
+    http.get(url, res => {
+      let d = '';
+      res.on('data', c => d += c);
+      res.on('end', () => { try { resolve(JSON.parse(d)); } catch(e) { resolve(null); } });
     }).on('error', reject);
   });
 }
 
-function sleep(ms) {
-  return new Promise(r => setTimeout(r, ms));
-}
-
-// ── Main ────────────────────────────────────────────────────────────────────
 async function main() {
-  fs.mkdirSync(OUT_DIR, { recursive: true });
+  const snapDir = path.join(__dirname, BACKTEST_ID, 'snapshots');
+  fs.mkdirSync(snapDir, { recursive: true });
 
-  const allStocks = {}; // market → stock list
-  const totals = [];
-
-  // Step 1: For each market, get the current top stock list (live, no date parameter)
-  for (const market of MARKETS) {
-    const url = `${API_BASE}/api/stock-resistance?market=${market}`;
-    console.log(`Fetching top stocks for market=${market}...`);
-    try {
-      const resp = await httpGet(url);
-      if (resp.status === 'ok' && Array.isArray(resp.data?.stocks)) {
-        allStocks[market] = resp.data.stocks;
-        totals.push({ market, count: resp.data.stocks.length });
-        console.log(`  Got ${resp.data.stocks.length} stocks for ${market}`);
-      } else {
-        console.warn(`  Unexpected response format for ${market}: status=${resp.status}`);
-        allStocks[market] = [];
-      }
-    } catch (err) {
-      console.warn(`  Failed to fetch ${market}: ${err.message}`);
-      allStocks[market] = [];
-    }
-    await sleep(200); // be kind to the API
-  }
-
-  // Step 2: For each stock, lookup community SR on the specified date
-  const enriched = {};
+  const result = { status: 'ok', date: DATE_STR, updatedAt: new Date().toISOString(), data: { markets: {} } };
 
   for (const market of MARKETS) {
-    const stocks = allStocks[market] || [];
-    enriched[market] = [];
+    console.log(`\n[${market}] Fetching top stocks...`);
+    // Get current top stock list (no date param needed for symbols)
+    const liveData = await httpGet(`${API_BASE}/api/stock-resistance?market=${market}`);
+    const stocks = liveData?.data?.stocks || [];
+    if (stocks.length === 0) { console.log(`  No stocks for ${market}`); continue; }
 
-    for (const stock of stocks) {
-      const symbol = stock.symbol || stock.name || stock.code;
+    const marketResult = { stocks: [] };
+    let done = 0;
+
+    for (const s of stocks) {
+      const symbol = s.tvSymbol || s.yahooSymbol;
       if (!symbol) continue;
 
-      const lookupUrl = `${API_BASE}/api/community-sr/lookup?symbol=${encodeURIComponent(symbol)}&date=${DATE_STR}`;
-      try {
-        const srResp = await httpGet(lookupUrl);
-        const levels = srResp.levels || srResp.data?.levels || srResp.data || [];
+      // Query historical S/R for this specific date
+      const srData = await httpGet(`${API_BASE}/api/community-sr/lookup?symbol=${symbol}&date=${DATE_STR}`);
+      const info = srData?.data?.[symbol];
+      if (!info) continue;
 
-        // Calculate nearest R and S
-        const currentPrice = stock.price || stock.lastPrice || stock.last || 0;
-        let nearestResistance = null;
-        let nearestSupport = null;
+      // Calculate pctToResistance and pctToSupport from nearest levels
+      const price = info.currentPrice;
+      const resistances = info.resistances || [];
+      const supports = info.supports || [];
+      const pctToRes = resistances.length > 0
+        ? ((resistances[0].price - price) / price * 100)
+        : 999;
+      const pctToSup = supports.length > 0
+        ? ((price - supports[supports.length - 1].price) / price * 100)
+        : 999;
 
-        if (Array.isArray(levels)) {
-          for (const level of levels) {
-            const price = typeof level === 'number' ? level : (level.price || level.value || 0);
-            if (price > currentPrice) {
-              if (nearestResistance === null || price < nearestResistance) nearestResistance = price;
-            } else if (price < currentPrice) {
-              if (nearestSupport === null || price > nearestSupport) nearestSupport = price;
-            }
-          }
-        }
-
-        const enrichedStock = {
-          ...stock,
-          communitySR: {
-            levels: Array.isArray(levels) ? levels : [],
-            nearestResistance,
-            nearestSupport,
-            pctToResistance: nearestResistance ? ((nearestResistance - currentPrice) / currentPrice * 100).toFixed(2) : null,
-            pctToSupport: nearestSupport ? ((currentPrice - nearestSupport) / currentPrice * 100).toFixed(2) : null,
-          },
-        };
-
-        enriched[market].push(enrichedStock);
-      } catch (err) {
-        // Add without SR data
-        enriched[market].push({
-          ...stock,
-          communitySR: {
-            levels: [],
-            nearestResistance: null,
-            nearestSupport: null,
-            pctToResistance: null,
-            pctToSupport: null,
-          },
-          srError: err.message,
-        });
-      }
-
-      await sleep(100); // rate limit
+      marketResult.stocks.push({
+        tvSymbol: symbol,
+        yahooSymbol: s.yahooSymbol || '',
+        name: s.name || '',
+        currentPrice: price,
+        pctToResistance: parseFloat(pctToRes.toFixed(2)),
+        pctToSupport: parseFloat(pctToSup.toFixed(2)),
+        resistance: resistances[0]?.price || null,
+        support: supports[supports.length - 1]?.price || null,
+        status: pctToRes < 5 ? 'close' : '',
+      });
+      done++;
+      if (done % 5 === 0) process.stdout.write(`  ${done}/${stocks.length}...\r`);
     }
-
-    console.log(`  Enriched ${enriched[market].length}/${stocks.length} stocks for ${market}`);
+    result.data.markets[market] = marketResult;
+    console.log(`  ${done} stocks done for ${market}`);
   }
 
-  // Step 3: Write output file
-  const output = {
-    status: 'ok',
-    data: {
-      date: DATE_STR,
-      markets: {},
-    },
-  };
-
-  for (const market of MARKETS) {
-    output.data.markets[market] = {
-      market,
-      stocks: enriched[market],
-    };
-  }
-  output.data.totals = totals;
-
-  const outFile = path.join(OUT_DIR, `resistance-${DATE_STR}.json`);
-  fs.writeFileSync(outFile, JSON.stringify(output, null, 2), 'utf-8');
-  console.log(`\nWrote ${outFile}`);
-  console.log(`Total enriched stocks: ${totals.reduce((s, t) => s + t.count, 0)}`);
+  const fileName = `resistance-${DATE_STR}.json`;
+  const outFile = path.join(snapDir, fileName);
+  fs.writeFileSync(outFile, JSON.stringify(result, null, 2));
+  regSnapshot(BACKTEST_ID, 'resistance', DATE_STR, fileName);
+  console.log(`\nDone: wrote ${fileName} with ${Object.keys(result.data.markets).length} markets`);
 }
 
-main().catch(err => {
-  console.error('Fatal error:', err);
-  process.exit(1);
-});
+main().catch(e => { console.error('Fatal:', e.message); process.exit(1); });
