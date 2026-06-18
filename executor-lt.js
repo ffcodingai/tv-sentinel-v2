@@ -31,9 +31,9 @@ function checkTrendConfirmed() {
     if (fs.existsSync(STATE_MACHINE_PATH)) {
       const sm = JSON.parse(fs.readFileSync(STATE_MACHINE_PATH, 'utf-8'));
       const cur = sm.current || '';
-      if (cur === 'L' || cur === 'FL' || cur === 'LT' || cur === 'LTT') {
+      if (cur === 'L') {
         return { confirmed: true, direction: 'up', dateKey: h.getHktDateKey(Date.now()), duration: sm.duration || 0 };
-      } else if (cur === 'S' || cur === 'SL' || cur === 'ST' || cur === 'STT') {
+      } else if (cur === 'S') {
         return { confirmed: true, direction: 'down', dateKey: h.getHktDateKey(Date.now()), duration: sm.duration || 0 };
       }
     }

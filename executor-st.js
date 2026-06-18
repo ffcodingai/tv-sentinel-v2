@@ -31,9 +31,9 @@ function checkTrendConfirmed() {
     if (fs.existsSync(STATE_MACHINE_PATH)) {
       const sm = JSON.parse(fs.readFileSync(STATE_MACHINE_PATH, 'utf-8'));
       const cur = sm.current || '';
-      if (cur === 'L' || cur === 'FL' || cur === 'LT' || cur === 'LTT') {
+      if (cur === 'L') {
         return { confirmed: true, direction: 'up', dateKey: h.getHktDateKey(Date.now()), duration: sm.duration || 0 };
-      } else if (cur === 'S' || cur === 'SL' || cur === 'ST' || cur === 'STT') {
+      } else if (cur === 'S') {
         return { confirmed: true, direction: 'down', dateKey: h.getHktDateKey(Date.now()), duration: sm.duration || 0 };
       }
     }
@@ -64,6 +64,7 @@ async function checkSpreadGrowing() {
     return {
       available: true, growing: growing || pctGrowing, was: prev.status, now: latest.status,
       prevPct: prev.percentile, currPct: latest.percentile,
+      records: recs,
       message: growing ? `🔥 tv-correlation: 折溢價由小變大 (${prev.status}→${latest.status})` : `➖ tv-correlation: 折溢價未明顯擴大 (${prev.status}→${latest.status})`,
     };
   } catch { return { available: false, growing: false, message: 'tv-correlation 讀取錯誤' }; }

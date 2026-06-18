@@ -2,10 +2,10 @@
   "current": "S",
   "previous": "SL",
   "changedAt": "2026-06-18T10:44:11.375Z",
-  "duration": 3,
+  "duration": 5,
   "conditions": {
     "a1": false,
-    "a2": false,
+    "a2": true,
     "a3": false,
     "volumeSurge": false,
     "eventConfirmed": false,

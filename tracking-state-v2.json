@@ -1,10 +1,10 @@
 {
   "dateKey": "20260618",
   "conditions": {
-    "direction": "up",
+    "direction": "down",
     "a1": true,
     "consensusTrendConfirmed": false,
-    "a2": true
+    "a2": false
   },
-  "durationCount": 82
+  "durationCount": 84
 }
