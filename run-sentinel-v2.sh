@@ -26,6 +26,16 @@ while true; do
   ST_RESULT=$(cd "${BASE_DIR}" && node executor-st.js --json 2>&1)
   echo "${ST_RESULT}" >> "${LOG_DIR}/st.log"
   
+  # 5. 狀態機 (State Machine)
+  SM_RESULT=$(cd "${BASE_DIR}" && node executor-state-machine.js \
+    --trend "${TREND_RESULT}" \
+    --turn "${TURN_RESULT}" \
+    --lt "${LT_RESULT}" \
+    --st "${ST_RESULT}" 2>&1)
+  echo "${SM_RESULT}" >> "${LOG_DIR}/sm.log"
+  SM_STATE=$(echo "${SM_RESULT}" | grep -o '"current":"[^"]*"' | head -1 | cut -d'"' -f4)
+  echo "  → State: ${SM_STATE}"
+  
   # 合并写入 sentinel.db
   cd "${BASE_DIR}" && node -e "
     const db = require('./tools/database');
@@ -35,13 +45,15 @@ while true; do
     const turn  = JSON.parse(process.argv[2] || '{}');
     const lt    = JSON.parse(process.argv[3] || '{}');
     const st    = JSON.parse(process.argv[4] || '{}');
+    const sm    = JSON.parse(process.argv[5] || '{}');
     const now = new Date().toISOString();
     db.createExecution({ sentinel_type:'trend', source:'cli', timestamp:now, triggered:trend.consensusTrendConfirmed, signal:trend.signal, summary:trend.reason||'', result_json:JSON.stringify(trend), sources:trend.sources||'' });
     db.createExecution({ sentinel_type:'check', source:'cli', timestamp:now, triggered:turn.triggered, signal:turn.signal, summary:turn.triggerReason||'', result_json:JSON.stringify(turn), sources:turn.sources||'' });
     db.createExecution({ sentinel_type:'lt', source:'cli', timestamp:now, triggered:lt.ltTriggered, signal:lt.signal, summary:lt.ltReason||'', result_json:JSON.stringify(lt), sources:lt.sources||'' });
     db.createExecution({ sentinel_type:'st', source:'cli', timestamp:now, triggered:st.stTriggered, signal:st.signal, summary:st.stReason||'', result_json:JSON.stringify(st), sources:st.sources||'' });
-    console.log('[DB] 4 executions written');
-  " "${TREND_RESULT}" "${TURN_RESULT}" "${LT_RESULT}" "${ST_RESULT}"
+    db.createExecution({ sentinel_type:'sm', source:'cli', timestamp:now, triggered:sm.triggered, signal:sm.signal, summary:sm.reason||'', result_json:JSON.stringify(sm), sources:'state_machine' });
+    console.log('[DB] 5 executions written');
+  " "${TREND_RESULT}" "${TURN_RESULT}" "${LT_RESULT}" "${ST_RESULT}" "${SM_RESULT}"
   
   # 推送 Kafka（合并一条）
   cd "${BASE_DIR}" && node -e "
@@ -51,6 +63,7 @@ while true; do
     const turn  = JSON.parse(process.argv[2] || '{}');
     const lt    = JSON.parse(process.argv[3] || '{}');
     const st    = JSON.parse(process.argv[4] || '{}');
+    const sm    = JSON.parse(process.argv[5] || '{}');
     const {markets} = h.getActiveMarkets();
     const merged = {
       ts: new Date().toLocaleString('zh-HK', {timeZone:'Asia/Hong_Kong'}),
@@ -60,9 +73,10 @@ while true; do
       turn:  { signal: turn.signal,  triggered: !!turn.triggered,  reason: turn.triggerReason||'' },
       lt:    { signal: lt.signal,    triggered: !!lt.ltTriggered,  reason: lt.ltReason||'' },
       st:    { signal: st.signal,    triggered: !!st.stTriggered,  reason: st.stReason||'' },
+      state: { current: sm.current, signal: sm.signal, changed: !!sm.triggered, reason: sm.reason||'' },
     };
     kafka.pushSignal(merged).then(() => console.log('[Kafka] Signal pushed'));
-  " "${TREND_RESULT}" "${TURN_RESULT}" "${LT_RESULT}" "${ST_RESULT}"
+  " "${TREND_RESULT}" "${TURN_RESULT}" "${LT_RESULT}" "${ST_RESULT}" "${SM_RESULT}"
   
   CYCLE_END=$(date +%s)
   DURATION=$((CYCLE_END - CYCLE_START))

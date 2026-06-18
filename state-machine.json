@@ -1,0 +1,32 @@
+{
+  "current": "SL",
+  "previous": "S",
+  "changedAt": "2026-06-18T10:29:12.404Z",
+  "duration": 1,
+  "conditions": {
+    "a1": false,
+    "a2": false,
+    "a3": false,
+    "volumeSurge": false,
+    "eventConfirmed": false,
+    "ma30Broken": false,
+    "ma30Breakout": true,
+    "resistancePattern": false,
+    "supportPattern": false
+  },
+  "transitions": [
+    {
+      "from": "?",
+      "to": "S",
+      "at": "2026-06-18T10:25:20.932Z",
+      "reason": "初始狀態"
+    },
+    {
+      "from": "S",
+      "to": "SL",
+      "at": "2026-06-18T10:29:12.403Z",
+      "reason": "一致下跌趨勢確認"
+    }
+  ],
+  "lastSignal": "FS"
+}

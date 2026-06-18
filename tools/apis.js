@@ -16,17 +16,27 @@ const VOLUME_SURGE_PATH = '/tmp/volume-surge-segments.json';
 
 // ── 底層 HTTP ──
 
-function httpGet(url, timeout = 5000) {
+function httpGet(url, timeout = 5000, maxRetries = 3) {
   return new Promise((resolve) => {
-    const req = http.get(url, res => {
-      let b = '';
-      res.on('data', c => b += c);
-      res.on('end', () => {
-        try { resolve(JSON.parse(b)); } catch (e) { resolve(null); }
+    function attempt(n) {
+      const req = http.get(url, res => {
+        let b = '';
+        res.on('data', c => b += c);
+        res.on('end', () => {
+          try { resolve(JSON.parse(b)); } catch (e) { resolve(null); }
+        });
       });
-    });
-    req.on('error', () => resolve(null));
-    req.setTimeout(timeout, () => { req.destroy(); resolve(null); });
+      req.on('error', () => {
+        if (n < maxRetries) setTimeout(() => attempt(n + 1), 3000);
+        else resolve(null);
+      });
+      req.setTimeout(timeout, () => {
+        req.destroy();
+        if (n < maxRetries) setTimeout(() => attempt(n + 1), 3000);
+        else resolve(null);
+      });
+    }
+    attempt(1);
   });
 }
 
