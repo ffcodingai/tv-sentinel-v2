@@ -7,4 +7,5 @@ node_modules/
 /tmp/
 .env
 backtest/*/
-sentinel.db
+sentinel*.db
+cache.json

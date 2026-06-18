@@ -20,14 +20,10 @@
 const http = require('http');
 const fs = require('fs');
 const path = require('path');
-
+const h = require('./tools/helpers');
+const a = require('./tools/apis');
 // ── 數據源 ──
-const SIGNAL_DB = 'http://192.168.25.127:8285';
-const INDEX_SERVER = 'http://localhost:3334';
-const KLINE_SERVER = 'http://localhost:4002';
-const ROTATION_UI_PATH = '/tmp/sector-rotation-ui.json';
-const VOLUME_SURGE_PATH = '/tmp/volume-surge-segments.json';
-const TRACKING_DB_PATH = path.join(__dirname, 'tracking-state.json');
+const TRACKING_DB_PATH = path.join(__dirname, 'tracking-state-v2.json');
 
 // ── 持續流動商品清單 ──
 const LIQUID_COMMODITIES = {
@@ -36,62 +32,6 @@ const LIQUID_COMMODITIES = {
   crypto:          { label:'Crypto', symbols: ['BTC_SPOT','ETH_SPOT','SOL_SPOT'] },
   forex:           { label:'匯率',   symbols: ['CNH_FX','JPY_FX','AUD_FX','EUR_FX','GBP_FX','CHF_FX','CAD_FX'] },
 };
-
-const SESSIONS = [
-  { id:'ASIA',   label:'亞洲時段', countries:['JP','KR','TW','AU','CN','HK','SG'], startH:8,  endH:15 },
-  { id:'CHINA',  label:'中國時段', countries:['CN','HK'], startH:9.5, endH:16 },
-  { id:'EUROPE', label:'歐洲時段', countries:['UK','FR','DE','CH','NL','ES','IT'], startH:15, endH:23.5 },
-  { id:'US',     label:'美國時段', countries:['US','US_SM'], startH:21.5, endH:4 },
-];
-const ALL_COUNTRIES = ['US','US_SM','UK','FR','DE','JP','KR','TW','CN','HK'];
-const COUNTRY_FLAGS = { UK:'🇬🇧',FR:'🇫🇷',DE:'🇩🇪',US:'🇺🇸',US_SM:'🇺🇸',CN:'🇨🇳',HK:'🇭🇰',JP:'🇯🇵',KR:'🇰🇷',TW:'🇹🇼',AU:'🇦🇺',SG:'🇸🇬' };
-
-function getHktTime(atStr) {
-  if (atStr) { const d = new Date(atStr); return { h:d.getHours(), m:d.getMinutes(), ts:d.getTime() }; }
-  const now = new Date(Date.now() + 8*3600000);
-  return { h:now.getUTCHours(), m:now.getUTCMinutes(), ts:now.getTime() };
-}
-
-function getHktDateKey(ts) {
-  const d = new Date(ts + 8*3600000);
-  const p = n => String(n).padStart(2, '0');
-  const hr = d.getUTCHours();
-  if (hr < 5) { const prev = new Date(d.getTime() - 86400000); return `${prev.getUTCFullYear()}${p(prev.getUTCMonth()+1)}${p(prev.getUTCDate())}`; }
-  return `${d.getUTCFullYear()}${p(d.getUTCMonth()+1)}${p(d.getUTCDate())}`;
-}
-
-function fmtHkt(ts) {
-  const d = new Date(ts + 8*3600000);
-  const p = n => String(n).padStart(2, '0');
-  return `${d.getUTCFullYear()}-${p(d.getUTCMonth()+1)}-${p(d.getUTCDate())} ${p(d.getUTCHours())}:${p(d.getUTCMinutes())}:${p(d.getUTCSeconds())}`;
-}
-
-function fmtHktShort(ts) {
-  const d = new Date(ts + 8*3600000);
-  return `${String(d.getUTCHours()).padStart(2,'0')}:${String(d.getUTCMinutes()).padStart(2,'0')}`;
-}
-
-function getActiveSessions(hktH, hktM) {
-  const h = hktH + hktM/60;
-  return SESSIONS.filter(s => { if (s.endH <= s.startH) return h >= s.startH || h < s.endH; return h >= s.startH && h < s.endH; });
-}
-
-function getActiveMarkets(hktH, hktM) {
-  const sessions = getActiveSessions(hktH, hktM);
-  return { sessions, markets: [...new Set(sessions.flatMap(s => s.countries))] };
-}
-
-function httpGet(url, timeout = 6000) {
-  return new Promise((resolve) => {
-    const req = http.get(url, res => {
-      let b = '';
-      res.on('data', c => b += c);
-      res.on('end', () => { try { resolve(JSON.parse(b)); } catch(e) { resolve(null); } });
-    });
-    req.on('error', () => resolve(null));
-    req.setTimeout(timeout, () => { req.destroy(); resolve(null); });
-  });
-}
 
 // ── 跨天追蹤 ──
 function loadTrackingState() {
@@ -116,9 +56,9 @@ function saveTrackingState(state) {
 async function fetchSpreadTrend() {
   try {
     const now = Date.now();
-    const s = encodeURIComponent(fmtHkt(now - 7200000));
-    const e = encodeURIComponent(fmtHkt(now));
-    const data = await httpGet(`${SIGNAL_DB}/signal/data/list?startTime=${s}&endTime=${e}&symbol=global_spread_agg&pageSize=5`, 5000);
+    const s = encodeURIComponent(h.fmtHkt(now - 7200000));
+    const e = encodeURIComponent(h.fmtHkt(now));
+    const data = await a.fetchSpreadAgg(5);
     if (!data?.results?.length) return { available: false, message: 'tv-correlation 無數據' };
 
     const recs = data.results.map(r => {
@@ -154,19 +94,12 @@ async function fetchSpreadTrend() {
  */
 async function fetchSectorSpread() {
   try {
-    const now = Date.now();
-    const s = encodeURIComponent(fmtHkt(now - 3600000));
-    const e = encodeURIComponent(fmtHkt(now));
-    const symbols = ['asia_sector','china_sector','europe_sector','us_sector'];
+    const activeMarkets = h.getActiveMarkets().markets;
+    const raw = await a.fetchSectorSpread(activeMarkets.length ? activeMarkets : null, 1);
     const allResults = [];
-
-    for (const sym of symbols) {
-      const data = await httpGet(`${SIGNAL_DB}/signal/data/list?symbol=${sym}&pageSize=1&startTime=${s}&endTime=${e}`, 4000);
-      if (!data?.results?.length) continue;
-      const ms = JSON.parse(data.results[0].ai_data.value)?.MARKETS_SECTOR || {};
-      for (const code of Object.keys(ms)) {
-        const st = ms[code]?.SPREAD_TREND;
-        if (st) allResults.push({ market: code, flag: COUNTRY_FLAGS[code]||'', spreadTrend: st });
+    for (const entry of raw) {
+      for (const [code, st] of Object.entries(entry.spreads)) {
+        allResults.push({ market: code, flag: h.COUNTRY_FLAGS[code]||'', spreadTrend: st });
       }
     }
 
@@ -195,9 +128,8 @@ async function fetchCommodityConsensus() {
   const result = { available: false, volumeSurge: [], technicalBreakouts: [], consensusReached: false, message: '' };
 
   try {
-    if (fs.existsSync(VOLUME_SURGE_PATH)) {
-      const volData = JSON.parse(fs.readFileSync(VOLUME_SURGE_PATH, 'utf-8'));
-      for (const entry of (volData.segments || [])) {
+    const volData = a.fetchVolumeSurge();
+    for (const entry of (volData.segments || [])) {
         const d = Array.isArray(entry) ? entry[1] : entry;
         if (!d || d.status !== 'active') continue;
         const sym = d.symbol || '';
@@ -210,7 +142,6 @@ async function fetchCommodityConsensus() {
           }
         }
       }
-    }
   } catch {}
 
   try {
@@ -218,7 +149,7 @@ async function fetchCommodityConsensus() {
     const from = now - 86400 * 250;
     const allSyms = Object.values(LIQUID_COMMODITIES).flatMap(c => c.symbols);
     const queries = allSyms.map(sym =>
-      httpGet(`${KLINE_SERVER}/history?symbol=${sym}&resolution=D&from=${from}&to=${now}`, 4000)
+      a.fetchKlineHistory(sym, "D", from, now)
         .then(data => ({ sym, data })).catch(() => ({ sym, data: null }))
     );
     const responses = await Promise.all(queries);
@@ -253,46 +184,59 @@ async function fetchCommodityConsensus() {
 async function fetchHotEvents() {
   const r = { available: false, events: [], hasCritical: false, message: '' };
   try {
-    const data = await httpGet('http://192.168.25.190:3000/api/news?limit=5', 4000);
-    if (data?.events?.length) r.events = data.events.map(e => ({ title: e.title||e.name||'', type: e.type||e.category||'general', severity: e.severity||'info' }));
-    r.hasCritical = r.events.some(e => /fed|利率|地缘|战争|制裁|cpi|非农|央行/i.test(e.title));
-    r.available = r.events.length > 0;
-    r.message = r.hasCritical ? `🔥 關鍵事件: ${r.events.filter(e=>/fed|利率|地缘|战争/i.test(e.title)).map(e=>e.title).join(', ')}` : r.available ? `📋 ${r.events.length}條事件` : '➖ 暫無事件數據';
+    // 取 HKT 今天的 00:00~23:59
+    const now = new Date();
+    const hktNow = new Date(now.getTime() + 8 * 3600000);
+    const todayStr = `${hktNow.getUTCFullYear()}-${String(hktNow.getUTCMonth()+1).padStart(2,'0')}-${String(hktNow.getUTCDate()).padStart(2,'0')}`;
+    const todayStart = new Date(todayStr + 'T00:00:00+08:00').getTime() / 1000;
+    const todayEnd   = new Date(todayStr + 'T23:59:59+08:00').getTime() / 1000;
+
+    const raw = await a.fetchNewsEvents(50);
+    const items = (raw?.data || []).filter(e => {
+      const ts = e.timestamp || 0;
+      return ts >= todayStart && ts <= todayEnd;
+    });
+
+    if (items.length) {
+      r.events = items;
+      r.available = true;
+    }
+
+    const criticalRe = /\bfed\b|\brate\b.?\bhike\b|\brate\b.?\bcut\b|\binterest\b.?\brate\b|央行|利率|加息|降息|\bcpi\b|通脹|通胀|非农|非農|\bnfp\b|employment|失业|失業|戰爭|\bwar\b|制裁|sanction|地缘|地緣|geopolitical|\bpmi\b|\bgdp\b|贸易战|贸易戰|tariff|衰退|recession|黑天鵝|black.?\bswan\b|\bcrisis\b|选举|選舉|election/i;
+    r.hasCritical = r.events.some(e => criticalRe.test(e.title) || criticalRe.test(e.source));
+    r.message = r.hasCritical
+      ? `🔥 關鍵事件: ${r.events.filter(e => criticalRe.test(e.title)).map(e => e.title.substring(0, 50)).join(' | ')}`
+      : r.available
+        ? `📋 ${r.events.length}條事件`
+        : '➖ 暫無事件數據';
   } catch { r.message = '➖ 事件 API 不可用'; }
   return r;
 }
 
 /**
- * 全球市場一致（10國）
+ * 全球指數一致（5類）
  */
-function analyzeAllMarkets(rotData) {
+function checkFuturesConsistency(futData) {
   const results = [];
-  let up=0, down=0, mix=0;
-  for (const m of ALL_COUNTRIES) {
-    const c = rotData?.countries?.[m];
-    if (!c) continue;
-    let dir;
-    if (c.status === 'open' && c.sector) {
-      const s = c.sector;
-      const u = (s.UP||[]).length, d = (s.DOWN||[]).length, tot = u + d + (s.MULTI||[]).length + (s.NEUTRAL||[]).length;
-      if (!tot) dir = 'neutral';
-      else if (u/tot >= 0.6) { dir='up'; up++; }
-      else if (d/tot >= 0.6) { dir='down'; down++; }
-      else { dir='mixed'; mix++; }
-    } else if (c.VOL_TREND) {
-      let u2=0, d2=0, t2=0;
-      for (const vt of Object.values(c.VOL_TREND)) { if (vt.valid_trend==='VALID_UP') u2++; else if (vt.valid_trend==='VALID_DOWN') d2++; t2++; }
-      dir = !t2 ? 'neutral' : u2/t2>=0.6 ? (up++,'up') : d2/t2>=0.6 ? (down++,'down') : (mix++,'mixed');
-    } else dir='neutral';
-    results.push({ market: m, label: c.label||m, flag: COUNTRY_FLAGS[m]||'', status: c.status||'unknown', direction: dir });
+  let up=0, down=0, flat=0;
+  for (const k of ["FIN","TECH","IND","CD","SMALL"]) {
+    const d = futData?.[k];
+    if (!d) continue;
+    results.push({ market: k, direction: d.direction, slope: d.slope, change: d.change });
+    if (d.direction === "up") up++;
+    else if (d.direction === "down") down++;
+    else flat++;
   }
   const tot = results.length;
   const consistent = tot > 0 && (up === tot || down === tot);
-  return { results, consistent, globalDir: up>down?'up':'down', totalUp: up, totalDown: down, mixed: mix, totalM: tot,
-    message: consistent ? `🌍 全球一致 ${up===tot?'📈看多':'📉看空'} (${up}多/${down}空/${mix}分歧, ${tot}國)` : `⚠️ 全球分歧 (${up}多/${down}空/${mix}分歧, ${tot}國)` };
+  return { results, consistent, globalDir: up>down?"up":"down", totalUp: up, totalDown: down, mixed: flat, totalM: tot,
+    message: consistent
+      ? `📊 全球指數一致 ${up===tot?"📈看多":"📉看空"} (${up}↑/${down}↓/${flat}—, ${tot}類)`
+      : `⚠️ 全球指數分歧 (${up}↑/${down}↓/${flat}—, ${tot}類)` };
 }
 
 // ══════════════════════════════════════════
+//  Main// ══════════════════════════════════════════
 //  Main
 // ══════════════════════════════════════════
 
@@ -304,16 +248,16 @@ async function main(options = {}) {
   const result = {
     timestamp: new Date().toISOString(),
     atTime: atStr || 'now',
-    dateKey: getHktDateKey(atStr ? new Date(atStr).getTime() : Date.now()),
+    dateKey: h.getHktDateKey(atStr ? new Date(atStr).getTime() : Date.now()),
     steps: [],
     conditionA: null, conditionB: null, conditionC: null, conditionD: null,
     consensusTrendConfirmed: false, trendDirection: null, reason: '', tracking: null,
   };
 
-  const {h,m} = getHktTime(atStr);
-  const {sessions, markets} = getActiveMarkets(h,m);
+  const {h:hktH, m:hktM} = h.getHktTime(atStr);
+  const {sessions, markets} = h.getActiveMarkets();
 
-  result.steps.push({ step:1, name:'時區檢測', status:sessions.length?'pass':'fail', detail:sessions.map(s=>s.label).join(' + ')||'休市' });
+  result.steps.push({ step:1, name:'時區檢測', status:sessions.length?'pass':'fail', detail:sessions.map(s=>s.id).join(' + ')||'休市' });
   result.steps.push({ step:2, name:'開盤市場', status:markets.length?'pass':'fail', detail:`${markets.length}市場: ${markets.join(', ')}` });
   if (!markets.length) { result.reason = '休市'; return result; }
 
@@ -337,11 +281,10 @@ async function main(options = {}) {
   result.conditionD = c;
   result.steps.push({ step:6, name:'C: 當日熱點事件', status: c.hasCritical?'warn':(c.available?'info':'info'), detail: c.message });
 
-  // 全球市場一致
-  let rotData = null;
-  try { rotData = JSON.parse(fs.readFileSync(ROTATION_UI_PATH, 'utf-8')); } catch {}
-  const globalM = rotData ? analyzeAllMarkets(rotData) : { consistent: false, globalDir: null, message: '無法獲取市場數據', results: [], totalUp:0, totalDown:0, mixed:0, totalM:0 };
-  result.steps.push({ step:7, name:'全球市場一致(10國)', status: globalM.consistent?'pass':'warn', detail: globalM.message, allMarkets: globalM.results });
+  // 全球指數一致
+  const futData = await a.fetchFuturesIndexes();
+  const globalM = futData ? checkFuturesConsistency(futData) : { consistent: false, globalDir: null, message: '無法獲取指數數據', results: [], totalUp:0, totalDown:0, mixed:0, totalM:0 };
+  result.steps.push({ step:7, name:'全球指數一致(5類)', status: globalM.consistent?'pass':'warn', detail: globalM.message, allMarkets: globalM.results });
 
   // 最終判定
   const aOk = a1.small && a2.small;
@@ -354,32 +297,75 @@ async function main(options = {}) {
 
   const good = [];
   const bad = [];
-  if (a1.small) good.push('A1折溢價變小'); else bad.push('A1折溢價未收斂');
-  if (a2.small) good.push('A2板塊收斂'); else bad.push('A2板塊未收斂');
-  if (b.consensusReached) good.push('B商品共識');
-  if (c.hasCritical) good.push('C關鍵事件');
-  if (dOk) good.push('全球一致'); else bad.push('全球分歧');
+  
+  // A1: 折溢價
+  const a1Status = a1.small ? '✅' : '⏸️';
+  const a1Msg = a1.available ? `${a1Status} A1${a1.small?'收斂':'未收斂'}(${a1.status||'?'})` : '❌ A1無數據';
+  if (a1.small) good.push(a1Msg); else bad.push(a1Msg);
+  
+  // A2: 板塊收斂
+  const a2Status = a2.small ? '✅' : '⏸️';
+  const a2Msg = a2.available ? `${a2Status} A2${a2.small?'收斂':'未收斂'}(${a2.smallCount||0}/${a2.totalCount||0})` : '❌ A2無數據';
+  if (a2.small) good.push(a2Msg); else bad.push(a2Msg);
+  
+  // B: 商品共識
+  if (b.consensusReached) good.push('✅ B商品共識');
+  else if (b.available) bad.push(`⏸️ B僅放量(${(b.volumeSurge||[]).length}品)`);
+  
+  // C: 事件
+  if (c.hasCritical) good.push('✅ C關鍵事件');
+  else if (c.available) bad.push(`⏸️ C${c.events.length}條事件(無關鍵)`);
+  else bad.push(`⏸️ C無事件`);
+  
+  // 全球指數一致
+  const gMsg = dOk ? `✅ 全球指數一致${globalM.globalDir==='up'?'📈':'📉'}` : `⏸️ 全球指數分歧(${globalM.totalUp||0}↑/${globalM.totalDown||0}↓/${globalM.mixed||0}—)`;
+  if (dOk) good.push(gMsg); else bad.push(gMsg);
 
   result.steps.push({
     step:8, name:'一致趨勢判定', status: confirmed?'pass':'warn',
-    detail: confirmed ? `🟢 一致趨勢確認 — ${dir==='up'?'📈上漲':'📉下跌'} (${good.join(', ')})` : `⏸️ 條件不足 (${bad.join(', ')})`,
+    detail: confirmed
+      ? `🟢 一致趨勢確認 — ${dir==='up'?'📈上漲':'📉下跌'} ${good.join(' | ')}`
+      : `⏸️ 條件不足 ${bad.join(' | ')}`,
   });
 
   // 跨天追蹤
   const state = loadTrackingState();
   if (state.dateKey !== result.dateKey) { state.dateKey = result.dateKey; state.conditions = {}; state.durationCount = 0; }
-  state.conditions = { ...state.conditions, consensusTrendConfirmed: confirmed, direction: dir, a1: a1.small, a2: a2.small };
+  state.conditions = { ...state.conditions, consensusTrendConfirmed: confirmed, direction: dir, a1: a1.small, a2: a2.small, signal: result.signal };
   state.durationCount++;
   saveTrackingState(state);
   result.tracking = state;
   result.steps.push({ step:9, name:'跨天追蹤', status:'info', detail: `📅 ${result.dateKey} 第${state.durationCount}次檢查` });
 
-  result.reason = confirmed ? `🟢 ${good.join(' + ')}` : `⏸️ ${bad.join(', ')}`;
+  result.reason = confirmed
+    ? `🟢 趨勢確認 ${good.join(' | ')}`
+    : `${good.length ? good.join(' | ') + ' | ' : ''}${bad.join(' | ')}`;
+
+  result.signal = result.consensusTrendConfirmed ? (result.trendDirection === 'up' ? 'FL' : 'FS') : 'NONE';
+
+  // 資料源質量
+  const activeMkts = h.getActiveMarkets().markets;
+  const a1Recs = a1?.records?.length || 0;
+  const a2Mkts = a2?.totalCount || 0;
+  const newsTotal = c?.events?.length || 0;
+  const surgeCount = b?.volumeSurge?.length || 0;
+  const srcParts = [];
+  srcParts.push('A1:' + a1Recs + '筆');
+  if (!a1?.available) srcParts[srcParts.length-1] = '⚠️ ' + srcParts[srcParts.length-1] + '(無數據)';
+  srcParts.push('A2:' + a2Mkts + '市場');
+  if (!a2?.available) srcParts[srcParts.length-1] = '⚠️ ' + srcParts[srcParts.length-1] + '(無數據)';
+  srcParts.push('B:放量' + surgeCount + '品');
+  srcParts.push('C:' + newsTotal + '條');
+  if (!c?.available) srcParts[srcParts.length-1] = '⚠️ ' + srcParts[srcParts.length-1] + '(無數據)';
+  srcParts.push('全球:' + (globalM?.results?.length||0) + '/5類');
+  if (!futData) srcParts[srcParts.length-1] = '⚠️ ' + srcParts[srcParts.length-1] + '(無數據)';
+  result.sources = srcParts.join(' | ');
 
   if (!jsonMode) {
-    log(`\n═════ 一致趨勢行情 ═════`);
+    log(`
+═════ 一致趨勢行情 ═════`);
     log(`確認: ${confirmed?'🟢是':'⚠️否'} | 方向: ${dir==='up'?'📈上漲':'📉下跌'}`);
-    log(`跨天: ${state.durationCount}次`); log('═══════════════════════\n');
+    log(`跨天: ${state.durationCount}次`); log('═══════════════════════');
   }
   return result;
 }

@@ -16,70 +16,18 @@
  *   node executor.js --json         ← JSON 輸出
  */
 
-const http = require('http');
+const http = require('http');const h = require('./tools/helpers');
+const a = require('./tools/apis');
 const fs = require('fs');
 const path = require('path');
 
-const SIGNAL_DB = 'http://192.168.25.127:8285';
-const ROTATION_UI_PATH = '/tmp/sector-rotation-ui.json';
-const TRACKING_DB_PATH = path.join(__dirname, 'tracking-state.json');
+const TRACKING_DB_PATH = path.join(__dirname, 'tracking-state-v2.json');
 
-const SESSIONS = [
-  { id:'ASIA',   label:'亞洲時段', countries:['JP','KR','TW','AU','CN','HK','SG'], startH:8,  endH:15 },
-  { id:'CHINA',  label:'中國時段', countries:['CN','HK'], startH:9.5, endH:16 },
-  { id:'EUROPE', label:'歐洲時段', countries:['UK','FR','DE','CH','NL','ES','IT'], startH:15, endH:23.5 },
-  { id:'US',     label:'美國時段', countries:['US','US_SM'], startH:21.5, endH:4 },
-];
-const COUNTRY_FLAGS = { UK:'🇬🇧',FR:'🇫🇷',DE:'🇩🇪',US:'🇺🇸',US_SM:'🇺🇸',CN:'🇨🇳',HK:'🇭🇰',JP:'🇯🇵',KR:'🇰🇷',TW:'🇹🇼',AU:'🇦🇺',SG:'🇸🇬' };
-const SECTOR_CN = { IT:'科技',FIN:'金融',CD:'可選消費',TELECOM:'通信',IND:'工業',CONS:'必需消費',MED:'醫療',ENR:'能源',CHEM:'化工',METAL:'金屬採礦' };
-
-function getHktTime(atStr) {
-  if (atStr) { const d = new Date(atStr); return { h:d.getHours(), m:d.getMinutes(), ts:d.getTime() }; }
-  const now = new Date(Date.now() + 8*3600000);
-  return { h:now.getUTCHours(), m:now.getUTCMinutes(), ts:now.getTime() };
-}
-
-function getHktDateKey(ts) {
-  const d = new Date(ts + 8*3600000);
-  const p = n => String(n).padStart(2, '0');
-  if (d.getUTCHours() < 5) { const prev = new Date(d.getTime() - 86400000); return `${prev.getUTCFullYear()}${p(prev.getUTCMonth()+1)}${p(prev.getUTCDate())}`; }
-  return `${d.getUTCFullYear()}${p(d.getUTCMonth()+1)}${p(d.getUTCDate())}`;
-}
-
-function fmtHkt(ts) {
-  const d = new Date(ts + 8*3600000);
-  const p = n => String(n).padStart(2, '0');
-  return `${d.getUTCFullYear()}-${p(d.getUTCMonth()+1)}-${p(d.getUTCDate())} ${p(d.getUTCHours())}:${p(d.getUTCMinutes())}:${p(d.getUTCSeconds())}`;
-}
-
-function getActiveSessions(hktH, hktM) {
-  const h = hktH + hktM/60;
-  return SESSIONS.filter(s => { if (s.endH <= s.startH) return h >= s.startH || h < s.endH; return h >= s.startH && h < s.endH; });
-}
-
-function getActiveMarkets(hktH, hktM) {
-  const sessions = getActiveSessions(hktH, hktM);
-  return { sessions, markets: [...new Set(sessions.flatMap(s => s.countries))] };
-}
-
-function httpGet(url, timeout = 5000) {
-  return new Promise((resolve) => {
-    const req = http.get(url, res => {
-      let b = '';
-      res.on('data', c => b += c);
-      res.on('end', () => { try { resolve(JSON.parse(b)); } catch(e) { resolve(null); } });
-    });
-    req.on('error', () => resolve(null));
-    req.setTimeout(timeout, () => { req.destroy(); resolve(null); });
-  });
-}
-
-// ── 前提檢查：趨勢已確認 ──
 function checkTrendConfirmed() {
   try {
     if (fs.existsSync(TRACKING_DB_PATH)) {
       const state = JSON.parse(fs.readFileSync(TRACKING_DB_PATH, 'utf-8'));
-      if (state.conditions?.consensusTrendConfirmed && state.dateKey === getHktDateKey(Date.now())) {
+      if (state.conditions?.consensusTrendConfirmed && state.dateKey === h.getHktDateKey(Date.now())) {
         return { confirmed: true, direction: state.conditions.direction, dateKey: state.dateKey, duration: state.durationCount || 0 };
       }
     }
@@ -91,9 +39,9 @@ function checkTrendConfirmed() {
 async function checkSpreadGrowing() {
   try {
     const now = Date.now();
-    const s = encodeURIComponent(fmtHkt(now - 7200000));
-    const e = encodeURIComponent(fmtHkt(now));
-    const data = await httpGet(`${SIGNAL_DB}/signal/data/list?startTime=${s}&endTime=${e}&symbol=global_spread_agg&pageSize=5`, 5000);
+    const s = encodeURIComponent(h.fmtHkt(now - 7200000));
+    const e = encodeURIComponent(h.fmtHkt(now));
+    const data = await a.fetchSpreadAgg(5);
     if (!data?.results?.length) return { available: false, message: 'tv-correlation 無數據', growing: false };
     const recs = data.results.map(r => {
       const v = JSON.parse(r.ai_data.value);
@@ -119,23 +67,10 @@ async function checkSpreadGrowing() {
 // ── A2: tv-turn 一級板塊由小變大 ──
 async function checkSectorSpreadGrowing() {
   try {
-    const now = Date.now();
-    const s = encodeURIComponent(fmtHkt(now - 3600000));
-    const e = encodeURIComponent(fmtHkt(now));
-    const symbols = ['asia_sector','china_sector','europe_sector','us_sector'];
-    const allSpreads = [];
-    for (const sym of symbols) {
-      const data = await httpGet(`${SIGNAL_DB}/signal/data/list?symbol=${sym}&pageSize=2&startTime=${s}&endTime=${e}`, 4000);
-      if (!data?.results?.length) continue;
-      const recs = data.results.map(r => {
-        const ms = JSON.parse(r.ai_data.value)?.MARKETS_SECTOR || {};
-        const out = {};
-        for (const code of Object.keys(ms)) out[code] = ms[code]?.SPREAD_TREND;
-        return { time: r.ai_data.closeTime, spreads: out };
-      }).filter(r => Object.values(r.spreads).some(x => x));
-      allSpreads.push(...recs);
-    }
-    if (allSpreads.length < 2) return { available: false, growing: false, message: 'tv-turn 不夠比對' };
+    const activeMarkets = h.getActiveMarkets().markets;
+    const raw = await a.fetchSectorSpread(activeMarkets.length ? activeMarkets : null, 2);
+    if (raw.length < 2) return { available: false, growing: false, message: 'tv-turn 不夠比對' };
+    const allSpreads = raw.map(r => ({ time: r.time, spreads: r.spreads }));
     allSpreads.sort((a,b) => a.time - b.time);
     const l = allSpreads[allSpreads.length - 1];
     const p = allSpreads[allSpreads.length - 2];
@@ -147,7 +82,7 @@ async function checkSectorSpreadGrowing() {
       totC++;
       const g = (ps === '缩小' || ps === '稳定') && ls === '扩大';
       if (g) growC++;
-      details.push({ market: code, flag: COUNTRY_FLAGS[code]||'', from: ps, to: ls, growing: g });
+      details.push({ market: code, flag: h.COUNTRY_FLAGS[code]||'', from: ps, to: ls, growing: g });
     }
     const majority = totC > 0 && (growC / totC) >= 0.5;
     return { available: totC > 0, growing: majority, growCount: growC, totalCount: totC, details: details.slice(0,6),
@@ -158,7 +93,7 @@ async function checkSectorSpreadGrowing() {
 // ── A3: 四級板塊由小變大 ──
 function checkSubSectorGrowing() {
   try {
-    const data = JSON.parse(fs.readFileSync(ROTATION_UI_PATH, 'utf-8'));
+    const data = a.fetchRotationUI();
     const countries = data.countries || {};
     let hasDiv = false;
     const details = [];
@@ -175,7 +110,7 @@ function checkSubSectorGrowing() {
         if (hasU && (hasD || hasM)) { mDiv = true; hasDiv = true; }
         dirs[sn] = hasU ? 'UP' : hasD ? 'DOWN' : hasM ? 'MULTI' : 'NEUTRAL';
       }
-      details.push({ market: m, flag: COUNTRY_FLAGS[m]||'', divergent: mDiv, groups: dirs });
+      details.push({ market: m, flag: h.COUNTRY_FLAGS[m]||'', divergent: mDiv, groups: dirs });
     }
     return { available: details.length > 0, growing: hasDiv, details,
       message: hasDiv ? '⚠️ 四級板塊分歧 — IT子類方向不一' : '✅ 四級板塊一致' };
@@ -194,18 +129,18 @@ async function main(options = {}) {
   const result = {
     timestamp: new Date().toISOString(),
     atTime: atStr || 'now',
-    dateKey: getHktDateKey(atStr ? new Date(atStr).getTime() : Date.now()),
+    dateKey: h.getHktDateKey(atStr ? new Date(atStr).getTime() : Date.now()),
     steps: [],
     triggered: false, triggerType: null, triggerReason: '',
     prerequisiteMet: false, conditionA1: null, conditionA2: null, conditionA3: null,
   };
 
-  const {h,m} = getHktTime(atStr);
-  const {sessions, markets} = getActiveMarkets(h,m);
+  const {h:hktH, m:hktM} = h.getHktTime(atStr);
+  const {sessions, markets} = h.getActiveMarkets();
 
   result.steps.push({ step:1, name:'時區檢測', status:sessions.length?'pass':'fail', detail:sessions.map(s=>s.label).join(' + ')||'休市' });
   result.steps.push({ step:2, name:'開盤市場', status:markets.length?'pass':'fail', detail:`${markets.length}市場: ${markets.join(', ')}` });
-  if (!markets.length) { result.triggerReason = '休市'; return result; }
+  if (!markets.length) { result.signal = 'NONE';result.triggerReason = '休市';return result; }
 
   // Step 3: 前提 — 一致趨勢行情已確認
   const trend = checkTrendConfirmed();
@@ -215,7 +150,7 @@ async function main(options = {}) {
     detail: trend.confirmed ? `✅ ${trend.direction==='up'?'📈上漲':'📉下跌'}趨勢確認 (Day${trend.dateKey})` : '❌ 無趨勢狀態 (需先執行一致趨勢哨兵)',
   });
   if (!trend.confirmed) {
-    result.triggered = false; result.triggerReason = '前提不滿足 — 一致趨勢行情未確認';
+    result.signal = 'NONE';result.triggered = false;result.triggerReason = '前提不滿足 — 一致趨勢行情未確認';
     return result;
   }
 
@@ -243,17 +178,20 @@ async function main(options = {}) {
   if (a1.growing) reasons.push('A1擴大');
   if (a2.growing) reasons.push('A2分歧');
   if (a3.growing) reasons.push('A3四級分歧');
+  result.signal = triggered ? (result.triggerType && result.triggerType.includes('下跌') ? 'STT' : 'LTT') : 'NONE';
+  result.sources = 'A1:' + (a1?.records?.length||0) + '筆 | A2:' + (a2?.totalCount||0) + '市場 | ' + (trend?.confirmed?'前提:趨勢確認':'⚠️ 前提:趨勢未確認');
   result.triggerReason = triggered ? `🚨 一致行情轉折！${reasons.join(' + ')}` : `✅ 未觸發 (${['A1','A2','A3'].map((k,i)=>[a1,a2,a3][i].growing?`${k}✅`:`${k}➖`).join(', ')})`;
 
   result.steps.push({ step:7, name:'轉折判定', status:triggered?'trigger':'pass',
     detail: triggered ? `🚨 折溢價擴大+板塊分歧+四級分歧 → ${result.triggerType}` : '✅ 條件未滿足' });
 
   if (!jsonMode) {
-    log(`\n═════ 一致行情轉折哨兵 ═════`);
+    log(`
+═════ 一致行情轉折哨兵 ═════`);
     log(`前提趨勢: ${trend.direction||'?'} ${trend.confirmed?'🟢':'🔴'}`);
     log(`觸發: ${triggered?'🚨 是':'✅ 否'}`);
     log(`原因: ${result.triggerReason}`);
-    log('══════════════════════════════\n');
+    log('══════════════════════════════');
   }
   return result;
 }

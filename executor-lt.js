@@ -18,101 +18,19 @@
  *   node executor-lt.js --json         ← JSON 輸出
  */
 
-const http = require('http');
+const http = require('http');const h = require('./tools/helpers');
+const a = require('./tools/apis');
 const fs = require('fs');
 const path = require('path');
 
 // ── Config ──
-const SIGNAL_DB = 'http://192.168.25.127:8285';
-const INDEX_SERVER = 'http://localhost:3334';
-const KLINE_SERVER = 'http://localhost:4002';
-const ROTATION_UI_PATH = '/tmp/sector-rotation-ui.json';
-const VOLUME_SURGE_PATH = '/tmp/volume-surge-segments.json';
-const TRACKING_DB_PATH = path.join(__dirname, 'tracking-state.json');
+const TRACKING_DB_PATH = path.join(__dirname, 'tracking-state-v2.json');
 
-const SESSIONS = [
-  { id:'ASIA',   label:'亞洲時段', countries:['JP','KR','TW','AU','CN','HK','SG'], startH:8,  endH:15 },
-  { id:'CHINA',  label:'中國時段', countries:['CN','HK'], startH:9.5, endH:16 },
-  { id:'EUROPE', label:'歐洲時段', countries:['UK','FR','DE','CH','NL','ES','IT'], startH:15, endH:23.5 },
-  { id:'US',     label:'美國時段', countries:['US','US_SM'], startH:21.5, endH:4 },
-];
-const ALL_COUNTRIES = ['US','US_SM','UK','FR','DE','JP','KR','TW','CN','HK'];
-const COUNTRY_FLAGS = {
-  UK:'🇬🇧',FR:'🇫🇷',DE:'🇩🇪',US:'🇺🇸',US_SM:'🇺🇸',CN:'🇨🇳',
-  HK:'🇭🇰',JP:'🇯🇵',KR:'🇰🇷',TW:'🇹🇼',CH:'🇨🇭',NL:'🇳🇱',ES:'🇪🇸',IT:'🇮🇹',AU:'🇦🇺',SG:'🇸🇬'
-};
-const SECTOR_CN = {
-  IT:'科技',FIN:'金融',CD:'可選消費',TELECOM:'通信',IND:'工業',
-  CONS:'必需消費',MED:'醫療',ENR:'能源',CHEM:'化工',METAL:'金屬採礦'
-};
-
-// ══════════════════════════════════════════
-//  Helpers
-// ══════════════════════════════════════════
-
-function getHktTime(atStr) {
-  if (atStr) { const d = new Date(atStr); return { h:d.getHours(), m:d.getMinutes(), ts:d.getTime() }; }
-  const now = new Date(Date.now() + 8*3600000);
-  return { h:now.getUTCHours(), m:now.getUTCMinutes(), ts:now.getTime() };
-}
-
-function getHktDateKey(ts) {
-  const d = new Date(ts + 8*3600000);
-  const p = n => String(n).padStart(2, '0');
-  const hr = d.getUTCHours();
-  if (hr < 5) {
-    const prev = new Date(d.getTime() - 86400000);
-    return `${prev.getUTCFullYear()}${p(prev.getUTCMonth()+1)}${p(prev.getUTCDate())}`;
-  }
-  return `${d.getUTCFullYear()}${p(d.getUTCMonth()+1)}${p(d.getUTCDate())}`;
-}
-
-function fmtHkt(ts) {
-  const d = new Date(ts + 8*3600000);
-  const p = n => String(n).padStart(2, '0');
-  return `${d.getUTCFullYear()}-${p(d.getUTCMonth()+1)}-${p(d.getUTCDate())} ${p(d.getUTCHours())}:${p(d.getUTCMinutes())}:${p(d.getUTCSeconds())}`;
-}
-
-function getActiveSessions(hktH, hktM) {
-  const h = hktH + hktM/60;
-  return SESSIONS.filter(s => {
-    if (s.endH <= s.startH) return h >= s.startH || h < s.endH;
-    return h >= s.startH && h < s.endH;
-  });
-}
-
-function getActiveMarkets(hktH, hktM) {
-  const sessions = getActiveSessions(hktH, hktM);
-  const set = new Set();
-  for (const s of sessions) s.countries.forEach(c => set.add(c));
-  return { sessions, markets: [...set] };
-}
-
-function httpGet(url, timeout=5000) {
-  return new Promise((resolve) => {
-    const req = http.get(url, res => {
-      let b = '';
-      res.on('data', c => b += c);
-      res.on('end', () => { try { resolve(JSON.parse(b)); } catch(e) { resolve(null); } });
-    });
-    req.on('error', () => resolve(null));
-    req.setTimeout(timeout, () => { req.destroy(); resolve(null); });
-  });
-}
-
-// ══════════════════════════════════════════
-//  Data Fetching
-// ══════════════════════════════════════════
-
-/**
- * 檢查一致趨勢行情是否已確認
- * 從 tracking-state.json 讀取
- */
 function checkTrendConfirmed() {
   try {
     if (fs.existsSync(TRACKING_DB_PATH)) {
       const state = JSON.parse(fs.readFileSync(TRACKING_DB_PATH, 'utf-8'));
-      if (state.conditions?.consensusTrendConfirmed && state.dateKey === getHktDateKey(Date.now())) {
+      if (state.conditions?.consensusTrendConfirmed && state.dateKey === h.getHktDateKey(Date.now())) {
         return { confirmed: true, direction: state.conditions.direction, dateKey: state.dateKey, duration: state.durationCount || 0 };
       }
     }
@@ -127,9 +45,9 @@ function checkTrendConfirmed() {
 async function checkSpreadGrowing() {
   try {
     const now = Date.now();
-    const s = encodeURIComponent(fmtHkt(now - 7200000));
-    const e = encodeURIComponent(fmtHkt(now));
-    const data = await httpGet(`${SIGNAL_DB}/signal/data/list?startTime=${s}&endTime=${e}&symbol=global_spread_agg&pageSize=5`, 4000);
+    const s = encodeURIComponent(h.fmtHkt(now - 7200000));
+    const e = encodeURIComponent(h.fmtHkt(now));
+    const data = await a.fetchSpreadAgg(5);
     if (!data?.results?.length) return { available: false, growing: false, message: 'tv-correlation 無數據' };
 
     const recs = data.results.map(r => {
@@ -172,22 +90,10 @@ async function checkSpreadGrowing() {
  */
 async function checkSectorSpreadGrowing() {
   try {
-    const now = Date.now();
-    const s = encodeURIComponent(fmtHkt(now - 3600000));
-    const e = encodeURIComponent(fmtHkt(now));
-    const data = await httpGet(`${SIGNAL_DB}/signal/data/list?symbol=asia_sector&pageSize=3&startTime=${s}&endTime=${e}`, 4000);
-    if (!data?.results?.length) return { available: false, growing: false, message: 'tv-turn 無數據' };
-
-    // Get prev and latest
-    const recs = data.results.map(r => {
-      const ms = JSON.parse(r.ai_data.value)?.MARKETS_SECTOR || {};
-      const spreads = {};
-      for (const code of Object.keys(ms)) { spreads[code] = ms[code]?.SPREAD_TREND; }
-      return { time: r.ai_data.closeTime, spreads };
-    }).filter(r => Object.values(r.spreads).some(s => s));
-    if (recs.length < 2) return { available: true, growing: false, message: '不夠比對', results: recs.map(r => r.spreads) };
-
-    recs.sort((a,b) => a.time - b.time);
+    const activeMarkets = h.getActiveMarkets().markets;
+    const raw = await a.fetchSectorSpread(activeMarkets.length ? activeMarkets : null, 3);
+    if (raw.length < 2) return { available: true, growing: false, message: '不夠比對' };
+    const recs = raw.map(r => ({ time: r.time, spreads: r.spreads })).sort((a,b) => a.time - b.time);
     const latest = recs[recs.length - 1];
     const prev = recs[recs.length - 2];
 
@@ -203,7 +109,7 @@ async function checkSectorSpreadGrowing() {
       const nowLarge = ls === '扩大';
       const isGrowing = wasSmall && nowLarge;
       if (isGrowing) growingCount++;
-      details.push({ market: code, flag: COUNTRY_FLAGS[code]||'', from: ps, to: ls, growing: isGrowing });
+      details.push({ market: code, flag: h.COUNTRY_FLAGS[code]||'', from: ps, to: ls, growing: isGrowing });
     }
 
     const majorityGrowing = totalCount > 0 && (growingCount / totalCount) >= 0.5;
@@ -225,7 +131,7 @@ async function checkSectorSpreadGrowing() {
  */
 function checkSubSectorGrowing() {
   try {
-    const data = JSON.parse(fs.readFileSync(ROTATION_UI_PATH, 'utf-8'));
+    const data = a.fetchRotationUI();
     const countries = data.countries || {};
     let hasDivergence = false;
     const details = [];
@@ -248,7 +154,7 @@ function checkSubSectorGrowing() {
       }
 
       details.push({
-        market: m, flag: COUNTRY_FLAGS[m]||'', label: countries[m]?.label||m,
+        market: m, flag: h.COUNTRY_FLAGS[m]||'', label: countries[m]?.label||m,
         divergent: marketDivergent, groups: dirs,
       });
     }
@@ -274,7 +180,7 @@ function analyzeLongPositions(rotData, markets) {
     if (!c?.sector) continue;
     const up = c.sector.UP || [];
     if (up.length > 0) {
-      longs.push({ market: m, flag: COUNTRY_FLAGS[m]||'', sectors: up });
+      longs.push({ market: m, flag: h.COUNTRY_FLAGS[m]||'', sectors: up });
     }
   }
   return longs;
@@ -289,7 +195,7 @@ async function checkResistance(previousLongs) {
 
   // 從 volume surge 找多頭產品的價格位置
   try {
-    const volData = JSON.parse(fs.readFileSync(VOLUME_SURGE_PATH, 'utf-8'));
+    const volData = a.fetchVolumeSurge();
     const segments = volData.segments || [];
     for (const entry of segments) {
       const data = Array.isArray(entry) ? entry[1] : entry;
@@ -301,7 +207,7 @@ async function checkResistance(previousLongs) {
       // 查價格數據檢查阻力型態
       const now = Math.floor(Date.now() / 1000);
       const from = now - 86400; // 1d
-      const priceData = await httpGet(`${INDEX_SERVER}/api/data`, 2000);
+      const priceData = await a.fetchCompositeIndex();
       if (!priceData?.indexData?.length) continue;
 
       const bars = priceData.indexData.slice(-60); // last 60 bars
@@ -333,7 +239,7 @@ async function main(options = {}) {
   const result = {
     timestamp: new Date().toISOString(),
     atTime: atStr || 'now',
-    dateKey: getHktDateKey(atStr ? new Date(atStr).getTime() : Date.now()),
+    dateKey: h.getHktDateKey(atStr ? new Date(atStr).getTime() : Date.now()),
     steps: [],
     ltTriggered: false,
     ltStage: 'lt_pending',
@@ -349,8 +255,8 @@ async function main(options = {}) {
     snapshot: null,
   };
 
-  const { h, m } = getHktTime(atStr);
-  const { sessions, markets } = getActiveMarkets(h, m);
+  const {h:hktH, m:hktM} = h.getHktTime(atStr);
+  const { sessions, markets } = h.getActiveMarkets();
 
   // Step 1-2: 時區
   result.steps.push({ step: 1, name: '時區檢測', status: sessions.length > 0 ? 'pass' : 'fail',
@@ -370,7 +276,7 @@ async function main(options = {}) {
       : trend.dateKey ? `⚠️ 趨勢未確認 (日期鍵=${trend.dateKey})` : '❌ 無趨勢狀態 (需先執行一致趨勢哨兵)',
   });
   if (!trend.confirmed) {
-    result.ltTriggered = false;
+    result.signal = 'NONE'; result.ltTriggered = false;
     result.ltStage = 'lt_pending';
     result.ltReason = '前提不滿足 — 一致趨勢行情未確認';
     return result;
@@ -414,9 +320,7 @@ async function main(options = {}) {
 
   // Step 7: 記錄多頭名單
   let rotData = null;
-  try {
-    if (fs.existsSync(ROTATION_UI_PATH)) rotData = JSON.parse(fs.readFileSync(ROTATION_UI_PATH, 'utf-8'));
-  } catch {}
+  rotData = a.fetchRotationUI();
   const longPositions = rotData ? analyzeLongPositions(rotData, markets) : [];
   result.longPositions = longPositions;
   result.snapshot = {
@@ -477,7 +381,8 @@ async function main(options = {}) {
   });
 
   if (!jsonMode) {
-    log(`\n═════ LT 上漲轉折哨兵 ═════`);
+    log(`
+═════ LT 上漲轉折哨兵 ═════`);
     log(`時間: ${result.atTime}`);
     log(`前提趨勢: ${trend.confirmed ? '🟢 確認' : '🔴 未確認'} (${trend.direction||'?'})`);
     log(`觸發: ${triggered ? '🚨 是' : '✅ 否'}`);
@@ -487,9 +392,15 @@ async function main(options = {}) {
       log(`  ${ic} Step ${s.step}: ${s.name} — ${(s.detail||'').substring(0,60)}`);
     }
     if (longPositions.length) log(`📋 ${longPositions.length}個多頭市場`);
-    log('════════════════════════════\n');
+    log('════════════════════════════');
   }
 
+  result.signal = result.ltTriggered ? 'LT' : 'NONE';
+
+  const srcA1 = spread?.available ? 'A1:' + (spread?.records?.length||0) + '筆' : '⚠️ A1:無數據';
+  const srcA2 = sectorSpread?.available ? 'A2:' + (sectorSpread?.totalCount||0) + '市場' : '⚠️ A2:無數據';
+  const srcPre = trend?.confirmed ? '前提:趨勢確認' : '⚠️ 前提:趨勢未確認';
+  result.sources = [srcA1, srcA2, srcPre].join(' | ');
   return result;
 }
 

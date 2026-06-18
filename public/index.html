@@ -84,7 +84,7 @@ select:focus{border-color:var(--gold)}
 .rot-card .rc-row .rc-label{color:var(--dim);min-width:70px}
 .rot-card .rc-actions{display:flex;gap:6px;margin-top:10px;flex-wrap:wrap}
 .rot-card .rc-actions button{flex:1}
-</style>
+.legend-info{font-size:12px;background:var(--card);border:1px solid var(--border);border-radius:8px;padding:0;margin-bottom:12px}.legend-toggle{padding:10px 14px;cursor:pointer;display:flex;align-items:center;gap:8px;user-select:none;font-size:13px;color:var(--dim)}.legend-toggle:hover{color:var(--text)}.legend-toggle .arrow{transition:transform .2s;font-size:10px}.legend-toggle.open .arrow{transform:rotate(90deg)}.legend-body{display:none;padding:0 14px 12px 14px;border-top:1px solid var(--border)}.legend-body.open{display:block}.legend-body table{font-size:11px;width:100%}.legend-body td{padding:3px 6px;vertical-align:top}.legend-body .td-label{color:var(--gold);font-weight:600;white-space:nowrap;width:60px}.legend-body .td-desc{color:var(--text)}.legend-body .td-note{color:var(--dim);font-size:10px}</style>
 </head>
 <body>
 <div class="hdr"><h1>🤖 哨兵指揮中心</h1><div class="hs"><span id="clk">--:--:--</span><span id="cnt0">0</span><span id="rotCnt">0 rotation</span><span id="ltCnt" style="color:#f97316;font-size:11px">LT:0</span><span id="stCnt" style="color:#3b82f6;font-size:11px">ST:0</span></div></div>
@@ -324,12 +324,31 @@ window.onerror=function(msg,url,line,col,err){
 };
 
 // ─── Tab 5: 儀表板 (含執行日誌) ───
-function rd_tab4(){
+window.onerror=function(m){var s=document.getElementById("dashStatus");if(s)s.textContent="❌ Error: "+m};
+function toggleLegend(){var b=document.getElementById('legendBody');var t=document.getElementById('legendToggleBtn');if(b&&t){b.classList.toggle('open');t.classList.toggle('open')}}function rd_tab4(){
  let e=document.getElementById('p6');
  if(!e)return;
  e.innerHTML='<div style="padding:12px;color:var(--dim);font-size:12px" id="dashStatus">載入中...</div>'+'<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:12px;margin-bottom:16px" id="dashCards"></div>'+
   '<div class="cd" id="dashLogSection">'+
    '<h2>📋 哨兵執行日誌</h2>'+
+   '<div class="legend-info" id="signalLegend">'+
+    '<div class="legend-toggle" id="legendToggleBtn" onclick="toggleLegend()">'+
+     '<span class="arrow">►</span> 📖 信號對照表</div>'+
+    '<div class="legend-body" id="legendBody">'+
+     '<table>'+
+      '<tr><td class="td-label">FL / FS</td><td class="td-desc">一致上漲行情 / 一致下跌行情</td><td class="td-note">trend 確認全球一致趨勢</td></tr>'+
+      '<tr><td class="td-label">LTT / STT</td><td class="td-desc">一致上漲轉折 / 一致下跌轉折</td><td class="td-note">turn 檢測到趨勢反轉</td></tr>'+
+      '<tr><td class="td-label">LT / ST</td><td class="td-desc">上漲轉折哨兵 / 下跌轉折哨兵</td><td class="td-note">輕度結構破壞檢測</td></tr>'+
+      '<tr><td class="td-label">NONE</td><td class="td-desc">無信號</td><td class="td-note">條件不滿足未觸發</td></tr>'+
+      '<tr><td colspan="3" style="padding-top:8px;color:var(--dim);font-size:11px;border-top:1px solid var(--border)">判斷條件說明</td></tr>'+
+      '<tr><td class="td-label">A1</td><td class="td-desc">tv-correlation 全局折溢價</td><td class="td-note">差值小=收斂 / 均等或大=未收斂</td></tr>'+
+      '<tr><td class="td-label">A2</td><td class="td-desc">tv-turn 板塊折溢價</td><td class="td-note">縮小+穩定佔比≥60%=收斂</td></tr>'+
+      '<tr><td class="td-label">B</td><td class="td-desc">商品技術共識</td><td class="td-note">放量+MA突破，強化信號非必要</td></tr>'+
+      '<tr><td class="td-label">C</td><td class="td-desc">當日熱點事件</td><td class="td-note">Fed/地緣/經濟數據，強化信號</td></tr>'+
+      '<tr><td class="td-label">全球一致</td><td class="td-desc">10國市場方向統一</td><td class="td-note">全上或全下無分歧</td></tr>'+
+     '</table>'+
+    '</div>'+
+   '</div>'+
    '<div class="log-bar">'+
     '<label>類型:</label><select id="logType" onchange="loadDashboard()">'+
      '<option value="">全部</option>'+
@@ -348,7 +367,7 @@ function rd_tab4(){
     '<span class="log-count" id="logCount"></span>'+
    '</div>'+
    '<div class="log-table-wrap"><table><thead><tr>'+
-    '<th>時間</th><th>哨兵</th><th>來源</th><th>觸發</th><th>結果</th><th>摘要</th>'+
+    '<th>時間</th><th>哨兵</th><th>來源</th><th>觸發</th><th>信號</th><th>摘要</th><th>資料源</th>'+
    '</tr></thead><tbody id="dashBody"></tbody></table></div>'+
   '</div>';
  loadDashboard();
@@ -411,7 +430,7 @@ async function loadDashboard(){
   let icons={check:'🔔',trend:'📈',lt:'⬇️',st:'⬆️'};
   let h='';
   data.forEach(d=>{
-   let resIcon=d.triggered?'🔴':'✅';
+   
    let trigIcon=d.triggered?'🔴 是':'✅ 否';
    let typeIcon=icons[d.sentinel_type]||'🔵';
    let hkt=hktStr(d.timestamp);
@@ -421,13 +440,15 @@ async function loadDashboard(){
     '<td style="white-space:nowrap">'+typeIcon+' '+(d.sentinel_type||'')+'</td>'+
     '<td>'+(d.source||'')+'</td>'+
     '<td style="text-align:center;font-weight:600">'+trigIcon+'</td>'+
-    '<td style="text-align:center">'+resIcon+'</td>'+
+    '<td style="text-align:center;font-size:11px;font-weight:600;color:var(--gold)">'+(d.signal||'')+'</td>'+
     '<td style="max-width:400px;overflow:hidden;text-overflow:ellipsis;font-size:11px">'+(d.summary||'').substring(0,150)+'</td>'+
+    '<td style="font-size:10px;color:var(--dim);max-width:200px;overflow:hidden">'+(d.sources||'')+'</td>'+
    '</tr>';
   });
   body.innerHTML=h||'<tr><td colspan="6" style="color:var(--dim)">暫無紀錄</td></tr>';
 
-  let cnt=document.getElementById('logCount');
+  var st2=document.getElementById('dashStatus');if(st2)st2.textContent='';
+  var cnt=document.getElementById('logCount');
   if(cnt)cnt.textContent='共 '+data.length+' 筆';
  }catch(e){
   let st=document.getElementById('dashStatus');
@@ -443,12 +464,13 @@ setInterval(()=>{let p6=document.getElementById('p6');if(p6&&p6.classList.contai
 let tb=document.getElementById('tabs');
 for(let i=0;i<RBT.length;i++){
  let b=document.createElement('button');
- b.className='tbb'+(i===RBT.length-1?' on':'');
+ b.className='tbb';
  b.textContent=RBT[i].ic+' '+RBT[i].nm;
  b.onclick=(function(idx){return function(){document.querySelectorAll('.tbb').forEach(t=>t.classList.remove('on'));document.querySelectorAll('.tab').forEach(t=>t.classList.remove('on'));this.classList.add('on');let tp=document.getElementById('p'+idx);if(tp)tp.classList.add('on');rd(idx);};})(i);
  tb.appendChild(b);
 }
-rd(0);rd(1);rd(2);rd(5);let p6=document.getElementById('p6');if(p6)p6.classList.add('on');
+rd(0);rd(1);rd(2);rd(5);rd_tab4();let p6=document.getElementById('p6');if(p6)p6.classList.add('on');
+let logBtn=document.createElement('button');logBtn.className='tbb on';logBtn.textContent='📋 執行日誌';logBtn.onclick=function(){document.querySelectorAll('.tbb').forEach(function(t){t.classList.remove('on')});document.querySelectorAll('.tab').forEach(function(t){t.classList.remove('on')});this.classList.add('on');var tp=document.getElementById('p6');if(tp){tp.classList.add('on');rd_tab4();}};tb.appendChild(logBtn);
 ck();setInterval(ck,1000);
 fetch(A+'/sentinels').then(r=>r.json()).then(d=>{let c=document.getElementById('cnt0');if(c&&d)c.textContent=d.length+' 個哨兵';}).catch(()=>{});
 fetch(A+'/sentinels?type=sector_rotation').then(r=>r.json()).then(d=>{let c=document.getElementById('rotCnt');if(c&&d)c.textContent=d.length+' rotation';}).catch(()=>{});

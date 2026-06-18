@@ -2,7 +2,7 @@ const Database = require('better-sqlite3');
 const path = require('path');
 const crypto = require('crypto');
 
-const DB_PATH = path.join(__dirname, 'sentinel.db');
+const DB_PATH = path.join(__dirname, 'sentinel-v2.db');
 const ALLOWED_SENTINEL_TYPES = ['up_trend','up_turn','down_trend','down_turn','sector_rotation','lt','st'];
 const ALLOWED_MARKET_STATES = ['uptrend','up_turning','downtrend','down_turning','rotation_up','rotation_down','neutral','up_st','down_lt'];
 
