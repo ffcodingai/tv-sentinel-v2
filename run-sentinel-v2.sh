@@ -51,7 +51,7 @@ while true; do
     db.createExecution({ sentinel_type:'check', source:'cli', timestamp:now, triggered:turn.triggered, signal:turn.signal, summary:turn.triggerReason||'', result_json:JSON.stringify(turn), sources:turn.sources||'' });
     db.createExecution({ sentinel_type:'lt', source:'cli', timestamp:now, triggered:lt.ltTriggered, signal:lt.signal, summary:lt.ltReason||'', result_json:JSON.stringify(lt), sources:lt.sources||'' });
     db.createExecution({ sentinel_type:'st', source:'cli', timestamp:now, triggered:st.stTriggered, signal:st.signal, summary:st.stReason||'', result_json:JSON.stringify(st), sources:st.sources||'' });
-    db.createExecution({ sentinel_type:'sm', source:'cli', timestamp:now, triggered:sm.triggered, signal:sm.signal, summary:sm.reason||'', result_json:JSON.stringify(sm), sources:'state_machine' });
+    db.createExecution({ sentinel_type:'sm', source:'cli', timestamp:now, triggered:sm.triggered, signal:sm.signal, summary:sm.summary||sm.reason||'', result_json:JSON.stringify(sm), sources:sm.sources||'state_machine' });
     console.log('[DB] 5 executions written');
   " "${TREND_RESULT}" "${TURN_RESULT}" "${LT_RESULT}" "${ST_RESULT}" "${SM_RESULT}"
   

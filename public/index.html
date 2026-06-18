@@ -433,11 +433,11 @@ async function loadDashboard(){
    
    let trigIcon=d.triggered?'🔴 是':'✅ 否';
    let typeIcon=icons[d.sentinel_type]||'🔵';
+   let smLabel = d.sentinel_type === 'sm' ? 'trend state' : (d.sentinel_type||'');
    let hkt=hktStr(d.timestamp);
    let date=hkt.date,ts=hkt.time;
    h+='<tr>'+
     '<td style="white-space:nowrap;font-size:10px">'+date+'<br>'+ts+'</td>'+
-    const smLabel = d.sentinel_type === 'sm' ? 'trend state' : (d.sentinel_type||'');
     '<td style="white-space:nowrap">'+typeIcon+' '+smLabel+'</td>'+
     '<td>'+(d.source||'')+'</td>'+
     '<td style="text-align:center;font-weight:600">'+trigIcon+'</td>'+

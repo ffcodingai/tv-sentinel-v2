@@ -21,14 +21,17 @@ const a = require('./tools/apis');
 const fs = require('fs');
 const path = require('path');
 
-const TRACKING_DB_PATH = path.join(__dirname, 'tracking-state-v2.json');
+const STATE_MACHINE_PATH = path.join(__dirname, 'state-machine.json');
 
 function checkTrendConfirmed() {
   try {
-    if (fs.existsSync(TRACKING_DB_PATH)) {
-      const state = JSON.parse(fs.readFileSync(TRACKING_DB_PATH, 'utf-8'));
-      if (state.conditions?.consensusTrendConfirmed && state.dateKey === h.getHktDateKey(Date.now())) {
-        return { confirmed: true, direction: state.conditions.direction, dateKey: state.dateKey, duration: state.durationCount || 0 };
+    if (fs.existsSync(STATE_MACHINE_PATH)) {
+      const sm = JSON.parse(fs.readFileSync(STATE_MACHINE_PATH, 'utf-8'));
+      const cur = sm.current || '';
+      if (cur === 'L' || cur === 'FL' || cur === 'LT' || cur === 'LTT') {
+        return { confirmed: true, direction: 'up', dateKey: h.getHktDateKey(Date.now()), duration: sm.duration || 0 };
+      } else if (cur === 'S' || cur === 'SL' || cur === 'ST' || cur === 'STT') {
+        return { confirmed: true, direction: 'down', dateKey: h.getHktDateKey(Date.now()), duration: sm.duration || 0 };
       }
     }
   } catch {}
