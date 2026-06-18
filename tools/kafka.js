@@ -13,7 +13,7 @@ const kafka = new Kafka({
 
 /**
  * 推送合併信號到 Kafka
- * @param {object} merged - { ts, dateKey, activeMarkets, trend, turn, lt, st }
+ * @param {object} merged - { ts, dateKey, activeMarkets, trend, turn, lt, st, state }
  */
 async function pushSignal(merged) {
   try {
@@ -28,6 +28,7 @@ async function pushSignal(merged) {
       turn: merged.turn,
       lt: merged.lt,
       st: merged.st,
+      state: merged.state,
     });
 
     const tsFm = Math.floor(Date.now() / 60000) * 60000;

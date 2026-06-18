@@ -1,50 +1,8 @@
 {
   "current": "S",
-  "previous": "SL",
-  "changedAt": "2026-06-18T10:44:11.375Z",
-  "duration": 5,
-  "conditions": {
-    "a1": false,
-    "a2": true,
-    "a3": false,
-    "volumeSurge": false,
-    "eventConfirmed": false,
-    "ma30Broken": false,
-    "ma30Breakout": true,
-    "resistancePattern": false,
-    "supportPattern": false
-  },
-  "transitions": [
-    {
-      "from": "?",
-      "to": "S",
-      "at": "2026-06-18T10:25:20.932Z",
-      "reason": "初始狀態"
-    },
-    {
-      "from": "S",
-      "to": "SL",
-      "at": "2026-06-18T10:29:12.403Z",
-      "reason": "一致下跌趨勢確認"
-    },
-    {
-      "from": "SL",
-      "to": "S",
-      "at": "2026-06-18T10:34:11.083Z",
-      "reason": "一致趨勢消失"
-    },
-    {
-      "from": "S",
-      "to": "SL",
-      "at": "2026-06-18T10:39:13.565Z",
-      "reason": "一致下跌趨勢確認"
-    },
-    {
-      "from": "SL",
-      "to": "S",
-      "at": "2026-06-18T10:44:11.374Z",
-      "reason": "一致趨勢消失"
-    }
-  ],
-  "lastSignal": "FS"
+  "ltTriggers": [],
+  "lttTriggers": [],
+  "stTriggers": [],
+  "sttTriggers": [],
+  "transitions": []
 }
