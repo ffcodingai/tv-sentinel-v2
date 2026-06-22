@@ -1,5 +1,5 @@
 /**
- * 一致趨勢行情（上漲 / 下跌）— 執行引擎（v2）
+ * 一致趨勢行情（上漲 / 下跌）+ 確認輪動— 執行引擎（v2）
  *
  * 資料皆從 agent 讀取，不自算門檻值。
  *
@@ -8,6 +8,7 @@
  *   A2. tv-turn → 板塊折溢價關係變小（SPREAD_TREND=縮小/穩定）
  *   B.  商品技術共識 — 持續流動商品(金/銀/銅/油/BTC/匯率) 一致放量+技術位突破
  *   C.  當日熱點事件 — 地緣/Fed/經濟數據
+ *   FR. 確認輪動 — global_sector 折溢價擴大 + 多空名單變化 + 全球指數不一致
  *
  * 跨天追蹤：HKT 05:00 切割，狀態持久化。
  *
@@ -216,6 +217,52 @@ async function fetchHotEvents() {
 /**
  * 全球指數一致（5類）
  */
+/**
+ * 獲取 global_sector 的最新前後兩條記錄，用於 FR 多空名單變化檢測
+ */
+async function fetchGlobalSectorData() {
+  const now = Date.now();
+  const s = h.fmtHkt(now - 3600000);
+  const e = h.fmtHkt(now);
+  const url = a.SIGNAL_DB + '/signal/data/list?symbol=global_sector&pageSize=2&startTime=' + encodeURIComponent(s) + '&endTime=' + encodeURIComponent(e);
+  try {
+    const data = await a.httpGet(url, 4000);
+    if (!data?.results?.length) return { available: false };
+    const sorted = data.results
+      .map(r => ({ time: r.ai_data.closeTime, value: r.ai_data.value }))
+      .sort((a, b) => b.time - a.time);
+    if (sorted.length < 2) return { available: false };
+    const latest = JSON.parse(sorted[0].value)?.MARKETS_SECTOR?.GL || {};
+    const prev = JSON.parse(sorted[1].value)?.MARKETS_SECTOR?.GL || {};
+    return {
+      available: true,
+      spreadTrend: latest.SPREAD_TREND || '穩定',
+      records: [
+        { up: latest.UP || [], down: latest.DOWN || [] },
+        { up: prev.UP || [], down: prev.DOWN || [] },
+      ],
+    };
+  } catch {
+    return { available: false };
+  }
+}
+
+/**
+ * 對比前後兩條記錄的多空名單，檢測是否有單方向的新增
+ * @returns {{ changed: boolean, conflict: boolean, direction: string|null, sectors: string[]|null }}
+ */
+function checkRotationChange(records) {
+  if (!records || records.length < 2) return { changed: false, conflict: false, direction: null, sectors: null };
+  const curr = records[0], prev = records[1];
+  // 新出現：在 curr 中有，但在 prev 的 UP 和 DOWN 中都沒有
+  const newUp = curr.up.filter(s => !prev.up.includes(s) && !prev.down.includes(s));
+  const newDown = curr.down.filter(s => !prev.down.includes(s) && !prev.up.includes(s));
+  if (newUp.length > 0 && newDown.length > 0) return { changed: true, conflict: true, direction: null, sectors: null };
+  if (newUp.length > 0) return { changed: true, conflict: false, direction: 'up', sectors: [...curr.up] };
+  if (newDown.length > 0) return { changed: true, conflict: false, direction: 'down', sectors: [...curr.down] };
+  return { changed: false, conflict: false, direction: null, sectors: null };
+}
+
 function checkFuturesConsistency(futData) {
   const results = [];
   let up=0, down=0, flat=0;
@@ -253,6 +300,8 @@ async function main(options = {}) {
     conditionA: null, conditionB: null, conditionC: null, conditionD: null,
     consensusTrendConfirmed: false, trendDirection: null, reason: '', tracking: null,
   };
+  let frTriggered = false;
+  let frData = null;
 
   const {h:hktH, m:hktM} = h.getHktTime(atStr);
   const {sessions, markets} = h.getActiveMarkets();
@@ -331,7 +380,7 @@ async function main(options = {}) {
   // 跨天追蹤
   const state = loadTrackingState();
   if (state.dateKey !== result.dateKey) { state.dateKey = result.dateKey; state.conditions = {}; state.durationCount = 0; }
-  state.conditions = { ...state.conditions, consensusTrendConfirmed: confirmed, direction: dir, a1: a1.small, a2: a2.small, signal: result.signal };
+  state.conditions = { ...state.conditions, consensusTrendConfirmed: confirmed, direction: dir, a1: a1.small, a2: a2.small, signal: result.signal, frTriggered };
   state.durationCount++;
   saveTrackingState(state);
   result.tracking = state;
@@ -342,6 +391,44 @@ async function main(options = {}) {
     : `${good.length ? good.join(' | ') + ' | ' : ''}${bad.join(' | ')}`;
 
   result.signal = result.consensusTrendConfirmed ? (result.trendDirection === 'up' ? 'FL' : 'FS') : 'NONE';
+
+  // ── FR: 確認輪動（僅當 FL/FS 未觸發時檢查）──
+  if (!result.consensusTrendConfirmed && markets.length > 0) {
+    frData = await fetchGlobalSectorData();
+    if (frData.available && frData.spreadTrend === '扩大') {
+      const rotCheck = checkRotationChange(frData.records);
+      if (rotCheck.changed && !rotCheck.conflict) {
+        if (!globalM.consistent) {  // 5類指數不一致
+          frTriggered = true;
+          result.signal = 'FR';
+          result.rotationDetail = {
+            direction: rotCheck.direction,
+            sectors: rotCheck.sectors,
+            spreadTrend: frData.spreadTrend,
+            timestamp: new Date().toISOString(),
+          };
+        }
+      }
+    }
+  }
+
+  // ── FR reason（在 FR 檢查之後構建）──
+  let reasonFR = '';
+  if (frTriggered) {
+    const rd = result.rotationDetail;
+    reasonFR = ` | 🚨 FR輪動確認！${rd.direction==='up'?'📈轉多':'📉轉空'}: ${rd.sectors.join(',')}`;
+  } else if (markets.length > 0) {
+    if (!frData || !frData.available) reasonFR = ' | FR:數據不足';
+    else if (frData.spreadTrend !== '扩大') reasonFR = ' | FR:spread未擴大';
+    else {
+      const rc = checkRotationChange(frData.records);
+      if (rc.conflict) reasonFR = ' | FR:多空同時變化';
+      else if (!rc.changed) reasonFR = ' | FR:名單無變化';
+      else if (globalM.consistent) reasonFR = ' | FR:全球指數一致';
+      else reasonFR = ' | FR:未知';
+    }
+  }
+  result.reason += reasonFR;
 
   // 資料源質量
   const activeMkts = h.getActiveMarkets().markets;
@@ -359,12 +446,23 @@ async function main(options = {}) {
   if (!c?.available) srcParts[srcParts.length-1] = '⚠️ ' + srcParts[srcParts.length-1] + '(無數據)';
   srcParts.push('全球:' + (globalM?.results?.length||0) + '/5類');
   if (!futData) srcParts[srcParts.length-1] = '⚠️ ' + srcParts[srcParts.length-1] + '(無數據)';
+  // FR 資料源
+  if (markets.length > 0) {
+    const frSrc = frData && frData.available
+      ? 'FR:global_sector(' + (frData.records?.length || 0) + '筆)'
+      : '⚠️ FR:global_sector(無數據)';
+    srcParts.push(frSrc);
+  }
   result.sources = srcParts.join(' | ');
 
   if (!jsonMode) {
     log(`
 ═════ 一致趨勢行情 ═════`);
-    log(`確認: ${confirmed?'🟢是':'⚠️否'} | 方向: ${dir==='up'?'📈上漲':'📉下跌'}`);
+    log(`FL/FS確認: ${confirmed?'🟢是':'⚠️否'} | 方向: ${dir==='up'?'📈上漲':'📉下跌'}`);
+    if (frTriggered) {
+      const rd = result.rotationDetail;
+      log(`🚨 FR 輪動確認！${rd.direction==='up'?'📈轉多':'📉轉空'}: ${rd.sectors.join(', ')}`);
+    }
     log(`跨天: ${state.durationCount}次`); log('═══════════════════════');
   }
   return result;

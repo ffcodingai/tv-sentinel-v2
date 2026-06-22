@@ -25,6 +25,9 @@ while true; do
   # 4. ST (下跌转折)
   ST_RESULT=$(cd "${BASE_DIR}" && node executor-st.js --json 2>&1)
   echo "${ST_RESULT}" >> "${LOG_DIR}/st.log"
+  # 4b. Rotation-Turn (确认轮动转折)
+  ROTATION_RESULT=$(cd "${BASE_DIR}" && node executor-rotation.js --trend "${TREND_RESULT}" --json 2>&1)
+  echo "${ROTATION_RESULT}" >> "${LOG_DIR}/rotation.log"
   
   # 5. 狀態機 (State Machine)
   SM_RESULT=$(cd "${BASE_DIR}" && node executor-state-machine.js \
@@ -41,29 +44,32 @@ while true; do
     const db = require('./tools/database');
     const h = require('./tools/helpers');
     db.ensureSignalColumn();
-    const trend = JSON.parse(process.argv[1] || '{}');
-    const turn  = JSON.parse(process.argv[2] || '{}');
-    const lt    = JSON.parse(process.argv[3] || '{}');
-    const st    = JSON.parse(process.argv[4] || '{}');
-    const sm    = JSON.parse(process.argv[5] || '{}');
+    const rotation = JSON.parse(process.argv[1] || '{}');
+    const trend = JSON.parse(process.argv[2] || '{}');
+    const turn  = JSON.parse(process.argv[3] || '{}');
+    const lt    = JSON.parse(process.argv[4] || '{}');
+    const st    = JSON.parse(process.argv[5] || '{}');
+    const sm    = JSON.parse(process.argv[6] || '{}');
     const now = new Date().toISOString();
     db.createExecution({ sentinel_type:'trend', source:'cli', timestamp:now, triggered:trend.consensusTrendConfirmed, signal:trend.signal, summary:trend.reason||'', result_json:JSON.stringify(trend), sources:trend.sources||'' });
     db.createExecution({ sentinel_type:'check', source:'cli', timestamp:now, triggered:turn.triggered, signal:turn.signal, summary:turn.triggerReason||'', result_json:JSON.stringify(turn), sources:turn.sources||'' });
     db.createExecution({ sentinel_type:'lt', source:'cli', timestamp:now, triggered:lt.ltTriggered, signal:lt.signal, summary:lt.ltReason||'', result_json:JSON.stringify(lt), sources:lt.sources||'' });
     db.createExecution({ sentinel_type:'st', source:'cli', timestamp:now, triggered:st.stTriggered, signal:st.signal, summary:st.stReason||'', result_json:JSON.stringify(st), sources:st.sources||'' });
+    db.createExecution({ sentinel_type:'rotation', source:'cli', timestamp:now, triggered:rotation.rtTriggered, signal:rotation.signal, summary:rotation.reason||'', result_json:JSON.stringify(rotation), sources:rotation.sources||'' });
     db.createExecution({ sentinel_type:'sm', source:'cli', timestamp:now, triggered:sm.triggered, signal:sm.signal, summary:sm.summary||sm.reason||'', result_json:JSON.stringify(sm), sources:sm.sources||'state_machine' });
-    console.log('[DB] 5 executions written');
-  " "${TREND_RESULT}" "${TURN_RESULT}" "${LT_RESULT}" "${ST_RESULT}" "${SM_RESULT}"
+    console.log('[DB] 6 executions written');
+  " "${ROTATION_RESULT}" "${TREND_RESULT}" "${TURN_RESULT}" "${LT_RESULT}" "${ST_RESULT}" "${SM_RESULT}"
   
   # 推送 Kafka（合并一条）
   cd "${BASE_DIR}" && node -e "
     const kafka = require('./tools/kafka');
     const h = require('./tools/helpers');
-    const trend = JSON.parse(process.argv[1] || '{}');
-    const turn  = JSON.parse(process.argv[2] || '{}');
-    const lt    = JSON.parse(process.argv[3] || '{}');
-    const st    = JSON.parse(process.argv[4] || '{}');
-    const sm    = JSON.parse(process.argv[5] || '{}');
+    const rotation = JSON.parse(process.argv[1] || '{}');
+    const trend = JSON.parse(process.argv[2] || '{}');
+    const turn  = JSON.parse(process.argv[3] || '{}');
+    const lt    = JSON.parse(process.argv[4] || '{}');
+    const st    = JSON.parse(process.argv[5] || '{}');
+    const sm    = JSON.parse(process.argv[6] || '{}');
     const {markets} = h.getActiveMarkets();
     const merged = {
       ts: new Date().toLocaleString('zh-HK', {timeZone:'Asia/Hong_Kong'}),
@@ -73,10 +79,11 @@ while true; do
       turn:  { signal: turn.signal,  triggered: !!turn.triggered,  reason: turn.triggerReason||'' },
       lt:    { signal: lt.signal,    triggered: !!lt.ltTriggered,  reason: lt.ltReason||'' },
       st:    { signal: st.signal,    triggered: !!st.stTriggered,  reason: st.stReason||'' },
+      rotation: { signal: rotation.signal||'NONE', triggered: !!rotation.rtTriggered, direction: rotation.monitorList?.direction, sectors: rotation.monitorList?.sectors, pendingSectors: rotation.monitorList?.pendingSectors, reason: rotation.reason||'' },
       state: { current: sm.current, signal: sm.signal, changed: !!sm.triggered, reason: sm.reason||'' },
     };
     kafka.pushSignal(merged).then(() => console.log('[Kafka] Signal pushed'));
-  " "${TREND_RESULT}" "${TURN_RESULT}" "${LT_RESULT}" "${ST_RESULT}" "${SM_RESULT}"
+  " "${ROTATION_RESULT}" "${TREND_RESULT}" "${TURN_RESULT}" "${LT_RESULT}" "${ST_RESULT}" "${SM_RESULT}"
   
   CYCLE_END=$(date +%s)
   DURATION=$((CYCLE_END - CYCLE_START))

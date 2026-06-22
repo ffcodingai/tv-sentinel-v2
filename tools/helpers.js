@@ -4,7 +4,7 @@
 const MARKET_HOURS = [
   { code:'JP',    tz:'Asia/Tokyo',       open:'09:00', close:'15:00' },
   { code:'KR',    tz:'Asia/Seoul',       open:'09:00', close:'15:30' },
-  { code:'TW',    tz:'Asia/Taipei',      open:'09:00', close:'13:30' },
+  // { code:'TW',    tz:'Asia/Taipei',      open:'09:00', close:'13:30' },  // ⏸ 暂时去掉TW统计
   { code:'CN',    tz:'Asia/Shanghai',    open:'09:30', close:'15:00' },
   { code:'HK',    tz:'Asia/Hong_Kong',   open:'09:30', close:'16:00' },
   { code:'SG',    tz:'Asia/Singapore',   open:'09:00', close:'17:00' },
@@ -16,7 +16,7 @@ const MARKET_HOURS = [
   { code:'US_SM', tz:'America/New_York', open:'09:30', close:'16:00' },
 ];
 
-const ALL_COUNTRIES = ['US','US_SM','UK','FR','DE','JP','KR','TW','CN','HK'];
+const ALL_COUNTRIES = ['US','US_SM','UK','FR','DE','JP','KR','CN','HK'];  // ⏸ TW 暂时去掉
 
 const COUNTRY_FLAGS = {
   UK:'🇬🇧',FR:'🇫🇷',DE:'🇩🇪',US:'🇺🇸',US_SM:'🇺🇸',CN:'🇨🇳',
@@ -81,7 +81,7 @@ function getActiveMarkets() {
   const codes = getActiveSessions();
   const SESSION_GROUPS = {
     '亞洲時段 (AU)':   ['AU'],
-    '亞洲時段 (ASIA)': ['JP','KR','TW','CN','HK','SG'],
+    '亞洲時段 (ASIA)': ['JP','KR','CN','HK','SG'],  // ⏸ TW 暂时去掉
     '歐洲時段':       ['UK','FR','DE'],
     '美國時段':       ['US','US_SM'],
   };

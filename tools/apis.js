@@ -91,7 +91,17 @@ async function fetchSectorSpread(activeCodes = null, maxRecords = 0) {
       }
     }
   }
-  return allResults;
+  // 按 5分钟窗口聚合：不同 symbol 时间戳可能偏移，窗口化后合并
+  const BUCKET_MS = 300000; // 5分钟
+  const grouped = {};
+  for (const r of allResults) {
+    const bucket = Math.floor(r.time / BUCKET_MS) * BUCKET_MS;
+    if (!grouped[bucket]) { grouped[bucket] = { spreads: {}, time: r.time }; }
+    Object.assign(grouped[bucket].spreads, r.spreads);
+    if (r.time > grouped[bucket].time) grouped[bucket].time = r.time;
+  }
+  return Object.values(grouped)
+    .sort((a, b) => b.time - a.time);
 }
 
 async function fetchKlineHistory(symbol, resolution = 'D', from, to) {

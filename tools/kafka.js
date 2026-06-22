@@ -28,6 +28,7 @@ async function pushSignal(merged) {
       turn: merged.turn,
       lt: merged.lt,
       st: merged.st,
+      rotation: merged.rotation,
       state: merged.state,
     });
 
