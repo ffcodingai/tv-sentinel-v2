@@ -15,6 +15,8 @@
 const http = require('http');
 const fs = require('fs');
 const path = require('path');
+const a = require('./tools/apis');
+const h = require('./tools/helpers');
 
 const TRACKING_PATH = path.join(__dirname, 'tracking-state-v2.json');
 const KLINE_SERVER = 'http://localhost:4003';
@@ -191,7 +193,28 @@ async function main(options = {}) {
     log(`监控名单: ${monitor.sectors.join(', ')} (${monitor.direction === 'down'?'📉':'📈'}方向)`);
   }
 
-  // ── Step 4: 对每个板块做反转确认 ──
+  // ── Step 4: 检查 global 板块折溢价是否缩小（条件1）──
+  let spreadNarrowed = false;
+  try {
+    const now = Date.now();
+    const s = encodeURIComponent(h.fmtHkt(now - 3600000));
+    const e = encodeURIComponent(h.fmtHkt(now));
+    const data = await a.httpGet(a.SIGNAL_DB + '/signal/data/list?symbol=global_sector&pageSize=1&startTime=' + s + '&endTime=' + e, 4000);
+    if (data?.results?.length > 0) {
+      const latest = JSON.parse(data.results[0].ai_data.value)?.MARKETS_SECTOR?.GL || {};
+      spreadNarrowed = latest.SPREAD_TREND === '缩小';
+    }
+  } catch {}
+
+  result.steps.push({ step: 4, name: 'global折溢價縮小', status: spreadNarrowed ? 'pass' : 'fail', detail: spreadNarrowed ? '✅ 缩小' : '⏸️ 未缩小' });
+
+  if (!spreadNarrowed) {
+    result.reason = '⏸️ global折溢價未缩小';
+    if (!jsonMode) log(`⏸️ global折溢價未缩小`);
+    return result;
+  }
+
+  // ── Step 5: 对每个板块做反转确认（条件2）──
   const barSources = [];
   const checkResults = [];
   let allConfirmed = true;
@@ -217,7 +240,7 @@ async function main(options = {}) {
     if (!check.confirmed) allConfirmed = false;
   }
 
-  // ── Step 5: 判定 ──
+  // ── Step 6: 判定 ──
   result.rtTriggered = allConfirmed;
   result.signal = allConfirmed ? 'RT' : 'NONE';
 
@@ -234,22 +257,17 @@ async function main(options = {}) {
     saveTrackingState(state);
 
     result.reason = `🚨 RT 触发！监控:${monitor.sectors.join(',')} | 即将转折:${result.monitorList.pendingSectors.join(',')}`;
-
-    if (!jsonMode) {
-      log(`🚨 RT 触发！ | 监控:${monitor.sectors.join(',')} | 即将转折:${result.monitorList.pendingSectors.join(',')}`);
-    }
+    if (!jsonMode) log(`🚨 RT 触发！ | 监控:${monitor.sectors.join(',')} | 即将转折:${result.monitorList.pendingSectors.join(',')}`);
   } else {
     const reasons = checkResults.filter(r => !r.confirmed).map(r => `${r.sector}(${r.reason})`).join(',');
     result.reason = `⏸️ 未满足: ${reasons}`;
-    if (!jsonMode) {
-      log(`⏸️ 未满足: ${reasons}`);
-    }
+    if (!jsonMode) log(`⏸️ 未满足: ${reasons}`);
   }
 
   // ── Sources ──
   result.sources = barSources.join(' | ');
 
-  result.steps.push({ step: 4, name: '判定', status: result.rtTriggered ? 'trigger' : 'pass', detail: result.reason });
+  result.steps.push({ step: 6, name: '判定', status: result.rtTriggered ? 'trigger' : 'pass', detail: result.reason });
 
   if (!jsonMode) log('═══════════════════════');
 
