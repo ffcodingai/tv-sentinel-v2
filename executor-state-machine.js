@@ -22,6 +22,7 @@ const INDEX_SERVER = 'http://localhost:3334';
 
 const DEFAULT_STATE = {
   current: '?',
+  trendStartTime: null,   // 趋势开始时间（状态切换时更新）
   ltTriggers: [],
   lttTriggers: [],
   stTriggers: [],
@@ -240,6 +241,11 @@ async function run(trend, turn, lt, st) {
     state.sttTriggers = [];
   }
 
+  // 趋势开始时间：状态变化时更新
+  if (changed && cur !== state.current) {
+    state.trendStartTime = nowISO();
+  }
+
   state.current = cur;
   if (changed && state.transitions.length > 50) {
     state.transitions = state.transitions.slice(-50);
@@ -254,6 +260,7 @@ async function run(trend, turn, lt, st) {
 
   const result = {
     current: state.current,
+    trendStartTime: state.trendStartTime,
     changed,
     reason,
     signal: signal !== 'NONE' ? signal : state.current,

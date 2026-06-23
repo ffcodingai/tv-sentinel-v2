@@ -141,6 +141,50 @@ function fetchVolumeSurge() {
   return { segments: [] };
 }
 
+/**
+ * 查询 8285 vol_rate_agg 的实时放量数据
+ * 返回: { [symbol]: rate } — current.rate > 1.2 为放量
+ */
+let _volRateCache = null;
+let _volRateTime = 0;
+
+async function fetchVolumeRate() {
+  const now = Date.now();
+  if (_volRateCache && now - _volRateTime < 30000) return _volRateCache;
+
+  try {
+    const end = new Date();
+    const start = new Date(end.getTime() - 300000); // 5分钟窗口
+    const fmt = d => `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')} ${String(d.getHours()).padStart(2,'0')}:${String(d.getMinutes()).padStart(2,'0')}:${String(d.getSeconds()).padStart(2,'0')}`;
+    const url = `${SIGNAL_DB}/signal/data/list?startTime=${encodeURIComponent(fmt(start))}&endTime=${encodeURIComponent(fmt(end))}&symbol=vol_rate_agg&pageSize=5`;
+    const data = await httpGet(url, 5000);
+
+    const result = {};
+    if (data?.results?.length > 0) {
+      for (const r of data.results) {
+        const value = JSON.parse(r.ai_data.value);
+        function flatten(obj) {
+          if (Array.isArray(obj)) {
+            for (const item of obj) {
+              if (item.symbol && item.current?.rate != null) {
+                result[item.symbol] = item.current.rate;
+              }
+            }
+          } else if (obj && typeof obj === 'object') {
+            for (const v of Object.values(obj)) flatten(v);
+          }
+        }
+        flatten(value);
+      }
+    }
+    _volRateCache = result;
+    _volRateTime = now;
+    return result;
+  } catch {
+    return {};
+  }
+}
+
 
 async function fetchFuturesIndexes() {
   const data = await httpGet('http://localhost:3336/api/data', 3000);
@@ -169,5 +213,6 @@ module.exports = {
   fetchNewsEvents,
   fetchRotationUI,
   fetchVolumeSurge,
+  fetchVolumeRate,
   fetchFuturesIndexes,
 };
