@@ -747,7 +747,7 @@ async function fetchProductKlines(product, fromTime) {
   // ── 合成产品：拉子产品 → 对齐 → 合成 ──
   if (product.isSynthetic && product.subSymbols) {
     const allData = await Promise.all(product.subSymbols.map(sub =>
-      httpGet(`${KLINE_4002}/history?symbol=${sub.kline}&resolution=${CONFIG.KLINE_RESOLUTION}&from=${from}&to=${now}`, 5000)
+      httpGet(`${KLINE_4003}/history?symbol=${sub.kline}&resolution=${CONFIG.KLINE_RESOLUTION}&from=${from}&to=${now}`, 5000)
         .then(d => ({ kline: sub.kline, t: d?.t || [], c: d?.c || [] }))
         .catch(() => ({ kline: sub.kline, t: [], c: [] }))
     ));
@@ -801,9 +801,9 @@ async function fetchProductKlines(product, fromTime) {
     return { ok: false, detail: `${product.klineSymbol} 无数据` };
   }
 
-  // 1G 股票组（单产品）→ 4002
+  // 1G 股票组（单产品）→ 4003
   if (product.group === 'stock' && product.klineSymbol) {
-    const data = await httpGet(`${KLINE_4002}/history?symbol=${product.klineSymbol}&resolution=${CONFIG.KLINE_RESOLUTION}&from=${from}&to=${now}`, 5000);
+    const data = await httpGet(`${KLINE_4003}/history?symbol=${product.klineSymbol}&resolution=${CONFIG.KLINE_RESOLUTION}&from=${from}&to=${now}`, 5000);
     if (data && data.s === 'ok' && data.c) return { ok: true, closes: data.c, times: data.t };
     return { ok: false, detail: `${product.klineSymbol} 无数据` };
   }
@@ -1470,6 +1470,7 @@ async function main(options = {}) {
 
     // 输出时去掉 K线原始数据
     const output = { ...turnoverResult };
+    output.klineOk = !!(turnoverResult.klines && turnoverResult.klines.ok);
     delete output.klines;
     result.productResults.push(output);
   }
@@ -1538,9 +1539,9 @@ async function main(options = {}) {
     srcParts.push('⚠️ Premium:无数据');
   }
   // B 条件：K线拉取状态
-  const klineOk = result.productResults.filter(r => r.klines?.ok).length;
-  const klineFail = result.productResults.length - klineOk;
-  srcParts.push(`B:K线(${klineOk}OK` + (klineFail > 0 ? `,${klineFail}失败` : '') + ')');
+  const klineOkCount = result.productResults.filter(r => r.klineOk === true).length;
+  const klineFailCount = result.productResults.length - klineOkCount;
+  srcParts.push(`B:K线(${klineOkCount}OK` + (klineFailCount > 0 ? `,${klineFailCount}失败` : '') + ')');
   // D 条件：放量数据
   const dHits = result.productResults.filter(r => r.conditions.d?.met).length;
   srcParts.push('D:放量' + dHits + '品');
