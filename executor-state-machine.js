@@ -65,17 +65,15 @@ function nowISO() {
 }
 
 // ── 條件提取 ──
-function extractConditions(trend, turn, lt, st) {
+function extractConditions(trend, turn) {
   return {
-    a1: turn?.conditionA1?.growing || lt?.conditionA1?.growing || st?.conditionA1?.growing || false,
-    a2: turn?.conditionA2?.growing || lt?.conditionA2?.growing || st?.conditionA2?.growing || false,
-    a3: turn?.conditionA3?.growing || lt?.conditionA3?.growing || st?.conditionA3?.growing || false,
+    a1: turn?.conditionA1?.growing || false,
+    a2: turn?.conditionA2?.growing || false,
+    a3: turn?.conditionA3?.growing || false,
     volumeSurge: false,
     eventConfirmed: false,
     ma30Broken: false,
     ma30Breakout: false,
-    resistancePattern: lt?.resistanceCheck?.resistanceFound || false,
-    supportPattern: st?.supportCheck?.supportFound || false,
   };
 }
 
@@ -106,11 +104,11 @@ async function checkMA30() {
 }
 
 // ── 主邏輯 ──
-async function run(trend, turn, lt, st) {
+async function run(trend, turn, slow) {
   const state = loadState();
 
   // 條件
-  const ct = extractConditions(trend, turn, lt, st);
+  const ct = extractConditions(trend, turn);
   ct.volumeSurge = checkVolumeSurge();
   const ma30 = await checkMA30();
   ct.ma30Broken = ma30.broken;
@@ -121,8 +119,9 @@ async function run(trend, turn, lt, st) {
   const direction = trend?.trendDirection || null;
   const FL = consensus && direction === 'up';
   const FS_cond = consensus && direction === 'down';
-  const LT_trig = lt?.ltTriggered || lt?.signal === 'LT';
-  const ST_trig = st?.stTriggered || st?.signal === 'ST';
+  // slow-turn 输出：LT = 上涨中转折(转空), ST = 下跌中转折(转多)
+  const LT_trig = slow?.signal === 'LT';
+  const ST_trig = slow?.signal === 'ST';
   const LTT_trig = turn?.triggered && turn?.signal === 'LTT';
   const STT_trig = turn?.triggered && turn?.signal === 'STT';
 
@@ -142,10 +141,17 @@ async function run(trend, turn, lt, st) {
   srcParts.push('A2:' + (ct.a2 ? '分歧' : '—'));
   srcParts.push('LT:' + (LT_trig ? '觸發' : '—'));
   srcParts.push('ST:' + (ST_trig ? '觸發' : '—'));
+  if (slow?.sectorResults) {
+    const sectorSummary = slow.sectorResults
+      .filter(s => s.confirmed)
+      .map(s => `${s.sector}=${s.direction}`)
+      .join(',');
+    if (sectorSummary) srcParts.push('轉折板塊:' + sectorSummary);
+  }
   srcParts.push('LTT:' + (LTT_trig || LTT_cond ? '可轉' : '—'));
   srcParts.push('STT:' + (STT_trig || STT_cond ? '可轉' : '—'));
 
-  // ═══════════════ L 側 ═══════════════
+  // ═══════════════ L 側（只在當前為 L 時關注上漲轉折）═══════════════
   if (cur === '?' || cur === 'L') {
     if (cur === '?') {
       cur = (direction === 'down') ? 'S' : 'L';
@@ -190,9 +196,8 @@ async function run(trend, turn, lt, st) {
       state.transitions.push({ from: 'L', to: 'S', at: nowISO(), reason: 'LT累積+一致下跌' });
     }
   }
-
-  // ═══════════════ S 側 ═══════════════
-  if (cur === 'S') {
+  // ═══════════════ S 側（只在當前為 S 時關注下跌轉折）═══════════════
+  else if (cur === 'S') {
     // FS 出現 → 清空 ST/STT trigger
     if (FS_cond) {
       if (state.stTriggers.length > 0 || state.sttTriggers.length > 0) {
@@ -282,8 +287,14 @@ if (require.main === module) {
   const args = process.argv.slice(2);
   const getArg = (key) => { const i = args.indexOf(key); return i >= 0 ? args[i + 1] : null; };
   const parse = (str) => { try { return str ? JSON.parse(str) : {}; } catch { return {}; } };
+  const readFile = (p) => { if (!p) return {}; try { return JSON.parse(require('fs').readFileSync(p, 'utf-8')); } catch { return {}; } };
 
-  run(parse(getArg('--trend')), parse(getArg('--turn')), parse(getArg('--lt')), parse(getArg('--st')))
+  // 支持文件参数（--trend-file）和命令行参数（--trend）
+  const trend = readFile(getArg('--trend-file')) || parse(getArg('--trend'));
+  const turn  = readFile(getArg('--turn-file')) || parse(getArg('--turn'));
+  const slow  = readFile(getArg('--slow-file')) || parse(getArg('--slow'));
+
+  run(trend, turn, slow)
     .then((r) => console.log(JSON.stringify(r)))
     .catch((e) => console.error(JSON.stringify({ error: e.message })));
 }

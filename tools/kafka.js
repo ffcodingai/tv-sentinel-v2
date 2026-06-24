@@ -26,8 +26,7 @@ async function pushSignal(merged) {
       activeMarkets: merged.activeMarkets,
       trend: merged.trend,
       turn: merged.turn,
-      lt: merged.lt,
-      st: merged.st,
+      slow: merged.slow,
       rotation: merged.rotation,
       state: merged.state,
     });

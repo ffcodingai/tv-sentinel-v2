@@ -1,8 +1,10 @@
 #!/bin/bash
-# Sentinel v2 Executor Loop — 串行运行 4 个计算 + 写入 DB + Kafka
+# Sentinel v2 Executor Loop — 串行运行计算 + 写入 DB + Kafka
+# 链路: trend → turn → slow-turn → rotation → state-machine → DB → Kafka
 BASE_DIR="/home/sdadmin/tv-sentinel-v2"
 LOG_DIR="/tmp/sentinel-v2-logs"
-mkdir -p "${LOG_DIR}"
+TMP_DIR="/tmp/sentinel-v2-tmp"
+mkdir -p "${LOG_DIR}" "${TMP_DIR}"
 
 echo "[$(date '+%Y-%m-%d %H:%M:%S')] Sentinel v2 executor loop started"
 
@@ -18,23 +20,26 @@ while true; do
   TURN_RESULT=$(cd "${BASE_DIR}" && node executor.js --json 2>&1)
   echo "${TURN_RESULT}" >> "${LOG_DIR}/turn.log"
   
-  # 3. LT (上涨转折)
-  LT_RESULT=$(cd "${BASE_DIR}" && node executor-lt.js --json 2>&1)
-  echo "${LT_RESULT}" >> "${LOG_DIR}/lt.log"
+  # 3. Slow-Turn (慢转折检测，替代旧 LT + ST)
+  SLOW_RESULT=$(cd "${BASE_DIR}" && node executor-slow-turn.js --json 2>&1)
+  echo "${SLOW_RESULT}" >> "${LOG_DIR}/slow.log"
   
-  # 4. ST (下跌转折)
-  ST_RESULT=$(cd "${BASE_DIR}" && node executor-st.js --json 2>&1)
-  echo "${ST_RESULT}" >> "${LOG_DIR}/st.log"
-  # 4b. Rotation-Turn (确认轮动转折)
+  # 4. Rotation-Turn (确认轮动转折)
   ROTATION_RESULT=$(cd "${BASE_DIR}" && node executor-rotation.js --trend "${TREND_RESULT}" --json 2>&1)
   echo "${ROTATION_RESULT}" >> "${LOG_DIR}/rotation.log"
   
-  # 5. 狀態機 (State Machine)
+  # 写入临时文件避免 Argument list too long
+  echo "${TREND_RESULT}" > "${TMP_DIR}/trend.json"
+  echo "${TURN_RESULT}" > "${TMP_DIR}/turn.json"
+  echo "${SLOW_RESULT}" > "${TMP_DIR}/slow.json"
+  echo "${ROTATION_RESULT}" > "${TMP_DIR}/rotation.json"
+  
+  # 5. 狀態機 (State Machine) — 从文件读取参数
   SM_RESULT=$(cd "${BASE_DIR}" && node executor-state-machine.js \
-    --trend "${TREND_RESULT}" \
-    --turn "${TURN_RESULT}" \
-    --lt "${LT_RESULT}" \
-    --st "${ST_RESULT}" 2>&1)
+    --trend-file "${TMP_DIR}/trend.json" \
+    --turn-file "${TMP_DIR}/turn.json" \
+    --slow-file "${TMP_DIR}/slow.json" 2>&1)
+  echo "${SM_RESULT}" > "${TMP_DIR}/sm.json"
   echo "${SM_RESULT}" >> "${LOG_DIR}/sm.log"
   SM_STATE=$(echo "${SM_RESULT}" | grep -o '"current":"[^"]*"' | head -1 | cut -d'"' -f4)
   echo "  → State: ${SM_STATE}"
@@ -42,34 +47,34 @@ while true; do
   # 合并写入 sentinel.db
   cd "${BASE_DIR}" && node -e "
     const db = require('./tools/database');
-    const h = require('./tools/helpers');
+    const fs = require('fs');
     db.ensureSignalColumn();
-    const rotation = JSON.parse(process.argv[1] || '{}');
-    const trend = JSON.parse(process.argv[2] || '{}');
-    const turn  = JSON.parse(process.argv[3] || '{}');
-    const lt    = JSON.parse(process.argv[4] || '{}');
-    const st    = JSON.parse(process.argv[5] || '{}');
-    const sm    = JSON.parse(process.argv[6] || '{}');
+    const tmpDir = '${TMP_DIR}';
+    const trend    = JSON.parse(fs.readFileSync(tmpDir+'/trend.json','utf-8'));
+    const turn     = JSON.parse(fs.readFileSync(tmpDir+'/turn.json','utf-8'));
+    const slow     = JSON.parse(fs.readFileSync(tmpDir+'/slow.json','utf-8'));
+    const rotation = JSON.parse(fs.readFileSync(tmpDir+'/rotation.json','utf-8'));
+    const sm       = JSON.parse(fs.readFileSync(tmpDir+'/sm.json','utf-8'));
     const now = new Date().toISOString();
-    db.createExecution({ sentinel_type:'trend', source:'cli', timestamp:now, triggered:trend.consensusTrendConfirmed, signal:trend.signal, summary:trend.reason||'', result_json:JSON.stringify(trend), sources:trend.sources||'' });
-    db.createExecution({ sentinel_type:'check', source:'cli', timestamp:now, triggered:turn.triggered, signal:turn.signal, summary:turn.triggerReason||'', result_json:JSON.stringify(turn), sources:turn.sources||'' });
-    db.createExecution({ sentinel_type:'lt', source:'cli', timestamp:now, triggered:lt.ltTriggered, signal:lt.signal, summary:lt.ltReason||'', result_json:JSON.stringify(lt), sources:lt.sources||'' });
-    db.createExecution({ sentinel_type:'st', source:'cli', timestamp:now, triggered:st.stTriggered, signal:st.signal, summary:st.stReason||'', result_json:JSON.stringify(st), sources:st.sources||'' });
+    db.createExecution({ sentinel_type:'trend',    source:'cli', timestamp:now, triggered:trend.consensusTrendConfirmed, signal:trend.signal, summary:trend.reason||'', result_json:JSON.stringify(trend), sources:trend.sources||'' });
+    db.createExecution({ sentinel_type:'check',    source:'cli', timestamp:now, triggered:turn.triggered, signal:turn.signal, summary:turn.triggerReason||'', result_json:JSON.stringify(turn), sources:turn.sources||'' });
+    db.createExecution({ sentinel_type:'slow',     source:'cli', timestamp:now, triggered:slow.signal!=='NONE', signal:slow.signal, summary:slow.summary||'', result_json:JSON.stringify(slow), sources:slow.sources||'' });
     db.createExecution({ sentinel_type:'rotation', source:'cli', timestamp:now, triggered:rotation.rtTriggered, signal:rotation.signal, summary:rotation.reason||'', result_json:JSON.stringify(rotation), sources:rotation.sources||'' });
-    db.createExecution({ sentinel_type:'sm', source:'cli', timestamp:now, triggered:sm.triggered, signal:sm.signal, summary:sm.summary||sm.reason||'', result_json:JSON.stringify(sm), sources:sm.sources||'state_machine' });
-    console.log('[DB] 6 executions written');
-  " "${ROTATION_RESULT}" "${TREND_RESULT}" "${TURN_RESULT}" "${LT_RESULT}" "${ST_RESULT}" "${SM_RESULT}"
+    db.createExecution({ sentinel_type:'sm',       source:'cli', timestamp:now, triggered:sm.triggered, signal:sm.signal, summary:sm.summary||sm.reason||'', result_json:JSON.stringify(sm), sources:sm.sources||'state_machine' });
+    console.log('[DB] 5 executions written');
+  "
   
   # 推送 Kafka（合并一条）
   cd "${BASE_DIR}" && node -e "
     const kafka = require('./tools/kafka');
     const h = require('./tools/helpers');
-    const rotation = JSON.parse(process.argv[1] || '{}');
-    const trend = JSON.parse(process.argv[2] || '{}');
-    const turn  = JSON.parse(process.argv[3] || '{}');
-    const lt    = JSON.parse(process.argv[4] || '{}');
-    const st    = JSON.parse(process.argv[5] || '{}');
-    const sm    = JSON.parse(process.argv[6] || '{}');
+    const fs = require('fs');
+    const tmpDir = '${TMP_DIR}';
+    const trend    = JSON.parse(fs.readFileSync(tmpDir+'/trend.json','utf-8'));
+    const turn     = JSON.parse(fs.readFileSync(tmpDir+'/turn.json','utf-8'));
+    const slow     = JSON.parse(fs.readFileSync(tmpDir+'/slow.json','utf-8'));
+    const rotation = JSON.parse(fs.readFileSync(tmpDir+'/rotation.json','utf-8'));
+    const sm       = JSON.parse(fs.readFileSync(tmpDir+'/sm.json','utf-8'));
     const {markets} = h.getActiveMarkets();
     const merged = {
       ts: new Date().toLocaleString('zh-HK', {timeZone:'Asia/Hong_Kong'}),
@@ -77,13 +82,25 @@ while true; do
       activeMarkets: markets,
       trend: { signal: trend.signal, direction: trend.trendDirection, reason: trend.reason||'', hasTrend: trend.signal === 'FL' || trend.signal === 'FS' },
       turn:  { signal: turn.signal,  triggered: !!turn.triggered,  reason: turn.triggerReason||'' },
-      lt:    { signal: lt.signal,    triggered: !!lt.ltTriggered,  reason: lt.ltReason||'' },
-      st:    { signal: st.signal,    triggered: !!st.stTriggered,  reason: st.stReason||'' },
+      slow:  {
+        signal: slow.signal,
+        triggered: slow.signal !== 'NONE',
+        direction: slow.triggerDirection,
+        summary: slow.summary || '',
+        sectors: (slow.sectorResults || []).map(s => ({
+          sector: s.sector,
+          confirmed: s.confirmed,
+          direction: s.direction,
+          g1: s.g1,
+          g2: s.g2,
+          detail: s.detail,
+        })),
+      },
       rotation: { signal: rotation.signal||'NONE', triggered: !!rotation.rtTriggered, direction: rotation.monitorList?.direction, sectors: rotation.monitorList?.sectors, pendingSectors: rotation.monitorList?.pendingSectors, reason: rotation.reason||'' },
       state: { current: sm.current, signal: sm.signal, changed: !!sm.triggered, reason: sm.reason||'' },
     };
     kafka.pushSignal(merged).then(() => console.log('[Kafka] Signal pushed'));
-  " "${ROTATION_RESULT}" "${TREND_RESULT}" "${TURN_RESULT}" "${LT_RESULT}" "${ST_RESULT}" "${SM_RESULT}"
+  "
   
   CYCLE_END=$(date +%s)
   DURATION=$((CYCLE_END - CYCLE_START))

@@ -209,6 +209,7 @@ async function main(options = {}) {
   result.steps.push({ step: 4, name: 'global折溢價縮小', status: spreadNarrowed ? 'pass' : 'fail', detail: spreadNarrowed ? '✅ 缩小' : '⏸️ 未缩小' });
 
   if (!spreadNarrowed) {
+    result.sources = 'global_sector:1笔';
     result.reason = '⏸️ global折溢價未缩小';
     if (!jsonMode) log(`⏸️ global折溢價未缩小`);
     return result;
@@ -265,7 +266,7 @@ async function main(options = {}) {
   }
 
   // ── Sources ──
-  result.sources = barSources.join(' | ');
+  result.sources = 'global_sector:1笔' + (barSources.length > 0 ? ' | ' + barSources.join(' | ') : '');
 
   result.steps.push({ step: 6, name: '判定', status: result.rtTriggered ? 'trigger' : 'pass', detail: result.reason });
 

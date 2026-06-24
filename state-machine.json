@@ -1,8 +1,40 @@
 {
-  "current": "S",
+  "current": "L",
   "ltTriggers": [],
   "lttTriggers": [],
   "stTriggers": [],
   "sttTriggers": [],
-  "transitions": []
+  "transitions": [
+    {
+      "from": "S",
+      "to": "L",
+      "at": "2026-06-23T07:09:30.516Z",
+      "reason": "STT一致下跌轉折"
+    },
+    {
+      "from": "L",
+      "to": "S",
+      "at": "2026-06-24T01:09:30.968Z",
+      "reason": "LTT一致上漲轉折"
+    },
+    {
+      "from": "S",
+      "to": "L",
+      "at": "2026-06-24T01:09:30.968Z",
+      "reason": "STT一致下跌轉折"
+    },
+    {
+      "from": "L",
+      "to": "S",
+      "at": "2026-06-24T05:10:22.244Z",
+      "reason": "LTT一致上漲轉折"
+    },
+    {
+      "from": "S",
+      "to": "L",
+      "at": "2026-06-24T05:10:22.244Z",
+      "reason": "STT一致下跌轉折"
+    }
+  ],
+  "trendStartTime": "2026-06-23T07:09:30.516Z"
 }

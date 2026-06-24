@@ -107,17 +107,12 @@ const RBT=[
  ds:[['🔄 tv-rot-judge','領頭資產掃描 + 輪動階段判定'],['📈 tv-trend','板塊折溢價 + VolTrend'],['🛰️ tv-intel','事件/技術位/財報'],['⏳ FF-Mac','商品/期貨/貨幣放量 API (待整合)']],
  cd:['① 掃描全域資產(商品/期貨/貨幣/指數)','② 找放量異常+進技術共識區的領頭資產','③ 判定一致行情是否成形','④ 派出 9 個市場哨兵收集板塊反應','⑤ 綜合判定輪動階段 (CN→EU→US→CN...)'],
  arch:'tv-rot-judge→領頭資產掃描→一致行情?→派9哨兵→板塊反應→🌊輪動判定\n領頭資產放量+技術共識 = 🚀一致行情\n無領頭資產 = ⏸️無明顯輪動信號'},
-{ic:'⬇️',nm:'LT 上漲轉折哨兵 v2',tp:'lt',ep:'/api/sentinels/lt-check',
- fn:'前提: 一致趨勢行情（上漲）已確認\n\n條件由小→大時觸發:\n  A1 📊 tv-correlation 折溢價 小→大\n  A2 🔄 tv-turn 一級板塊折溢價 小→大\n  A3 🔄 tv-turn 四級板塊 小→大\n  B  🔥 商品技術共識（放量+技術位突破）\n  C  🌍 當日熱點事件（地緣/Fed/數據）\n\n上批多頭產品→檢查阻力型態:\n  📈 V頂 / M頭 / 平台\n\n🚨 全部條件成立 = 上漲結構破壞',
- ds:[['📊 tv-correlation','global_spread_agg 折溢價狀態'],['🔄 tv-turn','板塊 SPREAD_TREND+四級IT'],['🔥 tv-volume','商品放量異常'],['📐 3334','價格型態（阻/支撐檢測）']],
- cd:['前提 ✅ 一致趨勢行情（上漲）','A1 ✅ tv-correlation 折溢價小→大','A2 ✅ tv-turn 一級板塊 小→大','A3 ✅ tv-turn 四級板塊 小→大','D 🔴 阻力型態（V頂/M頭/平台）'],
- arch:'前提:趨勢確認→A1小→大 + A2小→大 + A3小→大 + 阻力型態→🚨LT觸發\nLT = 一致趨勢行情的反面',
- ck:'LT哨兵檢查，前提需先執行一致趨勢哨兵'},
-{ic:'⬆️',nm:'ST 下跌轉折哨兵 v2',tp:'st',ep:'/api/sentinels/st-check',
- fn:'前提: 一致趨勢行情（下跌）已確認\n\n條件由小→大時觸發（與 LT 同條件，處於下跌時觸發）:\n  A1 📊 tv-correlation 折溢價 小→大\n  A2 🔄 tv-turn 一級板塊折溢價 小→大\n  A3 🔄 tv-turn 四級板塊 小→大\n  B  🔥 商品技術共識（放量+技術位突破）\n  C  🌍 當日熱點事件（地緣/Fed/數據）\n\n上批空頭產品→檢查支撐型態:\n  📉 V底 / A底 / W底 / 平台\n\n🚨 全部條件成立 = 下跌結構破壞',
- ds:[['📊 tv-correlation','global_spread_agg 折溢價狀態'],['🔄 tv-turn','板塊 SPREAD_TREND+四級IT'],['🔥 tv-volume','商品放量異常'],['📐 3334','價格型態（阻/支撐檢測）']],
- cd:['前提 ✅ 一致趨勢行情（下跌）','A1 ✅ tv-correlation 折溢價小→大','A2 ✅ tv-turn 一級板塊 小→大','A3 ✅ tv-turn 四級板塊 小→大','D 🟢 支撐型態（V底/A底/W底）'],
- arch:'前提:趨勢確認→A1小→大 + A2小→大 + A3小→大 + 支撐型態→🚨ST觸發\nST = LT 反面，下跌時觸發'},
+{ic:'🔄',nm:'慢轉折哨兵 v2',tp:'slow',ep:'/api/sentinels/slow-check',
+ fn:'慢轉折檢測（LT+ST 合併）\n\n5板塊 × 1G(股票+指數)+2G(商品) 聚合判定\n\n單產品條件:\n  A 折溢價擴大（sector SPREAD_TREND / premium）\n  B 價格形態（V底/W底/一字底/M頂/V頂/一字頂）\n  C 事件邏輯（待實現）\n  D 放量確認（vol_rate_agg，指數跳過）\n\n板塊聚合:\n  1G(股票+指數) 和 2G(商品,相關性取反) 各自判定\n  條件A: 大部分產品有轉折記錄且同向\n  條件B: 部分有轉折同向 + 其餘無轉折但方向支持\n  1G+2G 同向 → 板塊確認轉折\n\n信號:\n  LT = 5板塊全部轉空（上漲中轉折）\n  ST = 5板塊全部轉多（下跌中轉折）',
+ ds:[['📊 8285','sector SPREAD_TREND + global_sector'],['📈 3336','商品 premium API'],['🔥 8285','vol_rate_agg 放量數據'],['📐 4002','K線歷史（價格形態檢測）']],
+ cd:['① 獲取折溢價 + 放量數據','② 逐產品檢測 A/B/C/D 條件','③ 有轉折→記錄並更新方向，無轉折→K線方向','④ 1G(股票+指數) 和 2G(商品) 分組聚合','⑤ 1G+2G 同向 → 板塊確認轉折','⑥ 5板塊全部轉空→LT / 全部轉多→ST'],
+ arch:'trendStartTime→產品A/B/C/D檢測→1G+2G聚合→5板塊判定→LT/ST信號\n1️⃣=1G通過 2️⃣=2G通過 ✅=1G+2G都通過 ➖=都不滿足',
+ ck:'慢轉折哨兵，前提需先執行一致趨勢哨兵'},
 ];
 
 // ─── Tab 2 (Rotation) Data ───
@@ -354,13 +349,19 @@ function toggleLegend(){var b=document.getElementById('legendBody');var t=docume
      '<option value="">全部</option>'+
      '<option value="check">🔔 轉折哨兵</option>'+
      '<option value="trend">📈 趨勢管理</option>'+
-     '<option value="lt">⬇️ LT 上漲轉折</option>'+
-     '<option value="st">⬆️ ST 下跌轉折</option>'+
+     '<option value="slow">🔄 慢轉折</option>'+
+     '<option value="rotation">🔁 板塊輪動</option>'+
+     '<option value="sm">⚙️ Trend State</option>'+
     '</select>'+
     '<label>顯示:</label><select id="logLimit" onchange="loadDashboard()">'+
      '<option value="30">30 筆</option>'+
      '<option value="100" selected>100 筆</option>'+
      '<option value="200">200 筆</option>'+
+    '</select>'+
+    '<label>觸發:</label><select id="logTriggered" onchange="loadDashboard()">'+
+     '<option value="">全部</option>'+
+     '<option value="yes">🔴 已觸發</option>'+
+     '<option value="no">✅ 未觸發</option>'+
     '</select>'+
     '<label>關鍵字:</label><input type="text" id="logKeyword" placeholder="過濾..." style="width:100px;padding:4px 8px;border-radius:6px;border:1px solid var(--border);background:var(--bg);color:var(--text);font-size:12px" oninput="loadDashboard()">'+
     '<button class="btn bg" onclick="loadDashboard()">🔄 重新整理</button>'+
@@ -389,10 +390,12 @@ async function loadDashboard(){
  let ft=document.getElementById('logType');
  let lim=document.getElementById('logLimit');
  let kw=document.getElementById('logKeyword');
+ let tr=document.getElementById('logTriggered');
  try{
   let type=ft?ft.value:'';
   let limit=lim?lim.value:100;
   let keyword=(kw?kw.value:'').trim().toLowerCase();
+  let triggered=tr?tr.value:'';
   let url=A+'/executions?limit='+limit;
   if(type)url+='&type='+type;
   let data=await fetch(url).then(r=>r.json());
@@ -406,13 +409,17 @@ async function loadDashboard(){
    return s.includes(keyword)||t.includes(keyword)||src.includes(keyword);
   });
 
+  // Triggered filter
+  if(triggered==='yes') data=data.filter(d=>d.triggered);
+  if(triggered==='no') data=data.filter(d=>!d.triggered);
+
   // Summary cards
   let types={};
   data.forEach(d=>{let t=d.sentinel_type;if(!types[t])types[t]={total:0,triggered:0,last:null};types[t].total++;if(d.triggered)types[t].triggered++;types[t].last=d.timestamp;});
   let cards=document.getElementById('dashCards');
   if(cards){
-   let icons={check:'🔔',trend:'📈',lt:'⬇️',st:'⬆️',sm:'⚙️'};
-   let labels={check:'轉折哨兵',trend:'趨勢管理',lt:'LT 上漲轉折',st:'ST 下跌轉折',sm:'trend state'};
+   let icons={check:'🔔',trend:'📈',slow:'🔄',sm:'⚙️',rotation:'🔄'};
+   let labels={check:'轉折哨兵',trend:'趨勢管理',slow:'慢轉折',sm:'trend state',rotation:'板塊輪動'};
    cards.innerHTML=Object.entries(types).map(([t,v])=>
     '<div class="cd" style="text-align:center;padding:16px">'+
     '<div style="font-size:32px;margin-bottom:8px">'+(icons[t]||'🔵')+'</div>'+
@@ -427,7 +434,7 @@ async function loadDashboard(){
   }
 
   // Table
-  let icons={check:'🔔',trend:'📈',lt:'⬇️',st:'⬆️',sm:'⚙️'};
+  let icons={check:'🔔',trend:'📈',slow:'🔄',sm:'⚙️',rotation:'🔄'};
   let h='';
   data.forEach(d=>{
    
