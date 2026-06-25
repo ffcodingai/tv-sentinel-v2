@@ -9,3 +9,5 @@ node_modules/
 backtest/*/
 sentinel*.db
 cache.json
+slow-turn-state*.json
+tracking-state*.json

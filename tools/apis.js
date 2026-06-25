@@ -44,8 +44,8 @@ function httpGet(url, timeout = 5000, maxRetries = 3) {
 //  HTTP API 類數據源
 // ──────────────────────────────────────────
 
-async function fetchSpreadAgg(pageSize = 5) {
-  const now = Date.now();
+async function fetchSpreadAgg(pageSize = 5, atTime) {
+  const now = atTime ? new Date(atTime).getTime() : Date.now();
   const s = encodeURIComponent(fmtHkt(now - 3600000));
   const e = encodeURIComponent(fmtHkt(now));
   return httpGet(
@@ -59,8 +59,8 @@ async function fetchSpreadAgg(pageSize = 5) {
  * @param {string[]} [activeCodes] - 僅返回這些市場的數據
  * @param {number} maxRecords - 每 symbol 取最新幾條（0=全部, 1=最新1條, 2=最新2條...）
  */
-async function fetchSectorSpread(activeCodes = null, maxRecords = 0) {
-  const now = Date.now();
+async function fetchSectorSpread(activeCodes = null, maxRecords = 0, atTime) {
+  const now = atTime ? new Date(atTime).getTime() : Date.now();
   const s = encodeURIComponent(fmtHkt(now - 3600000));
   const e = encodeURIComponent(fmtHkt(now));
   const allResults = [];
@@ -143,20 +143,23 @@ function fetchVolumeSurge() {
 
 /**
  * 查询 8285 vol_rate_agg 的实时放量数据
- * 返回: { [symbol]: rate } — current.rate > 1.2 为放量
+ * 返回: { [symbol]: { rate, hasSegment } }
+ *   rate: current.rate（无则 null）
+ *   hasSegment: 是否存在活跃放量段（segments.status=active）
+ *   满足条件: rate > 1.2 或 hasSegment 为放量
  */
 let _volRateCache = null;
 let _volRateTime = 0;
 
-async function fetchVolumeRate() {
+async function fetchVolumeRate(atTime) {
   const now = Date.now();
-  if (_volRateCache && now - _volRateTime < 30000) return _volRateCache;
+  // 回测模式不使用缓存
+  if (!atTime && _volRateCache && now - _volRateTime < 30000) return _volRateCache;
 
   try {
-    const end = new Date();
-    const start = new Date(end.getTime() - 300000); // 5分钟窗口
-    const fmt = d => `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')} ${String(d.getHours()).padStart(2,'0')}:${String(d.getMinutes()).padStart(2,'0')}:${String(d.getSeconds()).padStart(2,'0')}`;
-    const url = `${SIGNAL_DB}/signal/data/list?startTime=${encodeURIComponent(fmt(start))}&endTime=${encodeURIComponent(fmt(end))}&symbol=vol_rate_agg&pageSize=5`;
+    const endMs = atTime ? new Date(atTime).getTime() : Date.now();
+    const startMs = endMs - 300000; // 5分钟窗口
+    const url = `${SIGNAL_DB}/signal/data/list?startTime=${encodeURIComponent(fmtHkt(startMs))}&endTime=${encodeURIComponent(fmtHkt(endMs))}&symbol=vol_rate_agg&pageSize=5`;
     const data = await httpGet(url, 5000);
 
     const result = {};
@@ -166,8 +169,12 @@ async function fetchVolumeRate() {
         function flatten(obj) {
           if (Array.isArray(obj)) {
             for (const item of obj) {
-              if (item.symbol && item.current?.rate != null) {
-                result[item.symbol] = item.current.rate;
+              if (!item.symbol) continue;
+              const rate = item.current?.rate ?? null;
+              const seg = item.segments;
+              const hasSegment = seg && typeof seg === 'object' && Object.keys(seg).length > 0 && seg.status === 'active';
+              if (rate != null || hasSegment) {
+                result[item.symbol] = { rate, hasSegment };
               }
             }
           } else if (obj && typeof obj === 'object') {
@@ -177,8 +184,10 @@ async function fetchVolumeRate() {
         flatten(value);
       }
     }
-    _volRateCache = result;
-    _volRateTime = now;
+    if (!atTime) {
+      _volRateCache = result;
+      _volRateTime = now;
+    }
     return result;
   } catch {
     return {};
@@ -186,8 +195,11 @@ async function fetchVolumeRate() {
 }
 
 
-async function fetchFuturesIndexes() {
-  const data = await httpGet('http://localhost:3336/api/data', 3000);
+async function fetchFuturesIndexes(atTime) {
+  const url = atTime
+    ? `http://localhost:3336/api/data?at=${encodeURIComponent(atTime)}`
+    : 'http://localhost:3336/api/data';
+  const data = await httpGet(url, 3000);
   if (!data) return null;
   const result = {};
   for (const k of ['FIN','TECH','IND','CD','SMALL']) {

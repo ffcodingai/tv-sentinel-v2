@@ -363,12 +363,17 @@ function toggleLegend(){var b=document.getElementById('legendBody');var t=docume
      '<option value="yes">🔴 已觸發</option>'+
      '<option value="no">✅ 未觸發</option>'+
     '</select>'+
+    '<label>來源:</label><select id="logSource" onchange="loadDashboard()">'+
+     '<option value="cli" selected>CLI</option>'+
+     '<option value="backtest">回測</option>'+
+     '<option value="">全部</option>'+
+    '</select>'+
     '<label>關鍵字:</label><input type="text" id="logKeyword" placeholder="過濾..." style="width:100px;padding:4px 8px;border-radius:6px;border:1px solid var(--border);background:var(--bg);color:var(--text);font-size:12px" oninput="loadDashboard()">'+
     '<button class="btn bg" onclick="loadDashboard()">🔄 重新整理</button>'+
     '<span class="log-count" id="logCount"></span>'+
    '</div>'+
    '<div class="log-table-wrap"><table><thead><tr>'+
-    '<th>時間</th><th>哨兵</th><th>來源</th><th>觸發</th><th>信號</th><th>摘要</th><th>資料源</th>'+
+    '<th>時間</th><th>哨兵</th><th>來源</th><th>版本</th><th>觸發</th><th>信號</th><th>摘要</th><th>資料源</th>'+
    '</tr></thead><tbody id="dashBody"></tbody></table></div>'+
   '</div>';
  loadDashboard();
@@ -391,15 +396,18 @@ async function loadDashboard(){
  let lim=document.getElementById('logLimit');
  let kw=document.getElementById('logKeyword');
  let tr=document.getElementById('logTriggered');
+ let lsrc=document.getElementById('logSource');
  try{
   let type=ft?ft.value:'';
   let limit=lim?lim.value:100;
   let keyword=(kw?kw.value:'').trim().toLowerCase();
   let triggered=tr?tr.value:'';
+  let source=lsrc?lsrc.value:'cli';
   let url=A+'/executions?limit='+limit;
   if(type)url+='&type='+type;
+  if(source)url+='&source='+source;
   let data=await fetch(url).then(r=>r.json());
-  if(!Array.isArray(data)){body.innerHTML='<tr><td colspan="6" style="color:var(--red)">載入失敗</td></tr>';return;}
+  if(!Array.isArray(data)){body.innerHTML='<tr><td colspan="8" style="color:var(--red)">載入失敗</td></tr>';return;}
 
   // Keyword filter
   if(keyword) data=data.filter(d=>{
@@ -447,13 +455,14 @@ async function loadDashboard(){
     '<td style="white-space:nowrap;font-size:10px">'+date+'<br>'+ts+'</td>'+
     '<td style="white-space:nowrap">'+typeIcon+' '+smLabel+'</td>'+
     '<td>'+(d.source||'')+'</td>'+
+    '<td style="font-size:10px;color:var(--dim)">'+(d.backtest_id||'')+'</td>'+
     '<td style="text-align:center;font-weight:600">'+trigIcon+'</td>'+
     '<td style="text-align:center;font-size:11px;font-weight:600;color:var(--gold)">'+(d.signal||'')+'</td>'+
     '<td style="max-width:400px;overflow:hidden;text-overflow:ellipsis;font-size:11px">'+(d.summary||'').substring(0,150)+'</td>'+
     '<td style="font-size:10px;color:var(--dim);max-width:200px;overflow:hidden">'+(d.sources||'')+'</td>'+
    '</tr>';
   });
-  body.innerHTML=h||'<tr><td colspan="6" style="color:var(--dim)">暫無紀錄</td></tr>';
+  body.innerHTML=h||'<tr><td colspan="8" style="color:var(--dim)">暫無紀錄</td></tr>';
 
   var st2=document.getElementById('dashStatus');if(st2)st2.textContent='';
   var cnt=document.getElementById('logCount');
@@ -461,7 +470,7 @@ async function loadDashboard(){
  }catch(e){
   let st=document.getElementById('dashStatus');
  if(st)st.textContent='❌ 載入失敗: '+e.message;
- body.innerHTML='<tr><td colspan="6" style="color:var(--red)">❌ 請重新整理</td></tr>';
+ body.innerHTML='<tr><td colspan="8" style="color:var(--red)">❌ 請重新整理</td></tr>';
  }
 }
 

@@ -198,8 +198,8 @@ const STOCK_PRODUCTS = {
  *   - K线：运行时拉取各子产品K线 → 波动率归一化等权合成（buildSyntheticCloses）
  *   - 放量：任一子产品触发放量即算（checkConditionD 遍历 subSymbols）
  */
-function getStockProducts() {
-  const { markets } = h.getActiveMarkets();
+function getStockProducts(atTime) {
+  const { markets } = h.getActiveMarkets(atTime);
   const products = [];
   for (const mkt of markets) {
     if (!STOCK_MARKETS_WITH_SPREAD.includes(mkt)) continue;
@@ -740,14 +740,14 @@ function buildSyntheticCloses(closeArrays, window = 20, scale = 0.01) {
  * 普通产品 → 直接拉 4002/4003
  * 合成产品 → 拉取所有子产品K线 → 时间对齐 → 合成
  */
-async function fetchProductKlines(product, fromTime) {
-  const now = Math.floor(Date.now() / 1000);
+async function fetchProductKlines(product, fromTime, atTime) {
+  const now = atTime ? Math.floor(new Date(atTime).getTime() / 1000) : Math.floor(Date.now() / 1000);
   const from = fromTime || (now - 3 * 86400); // 默认3天，或从 trendStartTime 开始
 
   // ── 合成产品：拉子产品 → 对齐 → 合成 ──
   if (product.isSynthetic && product.subSymbols) {
     const allData = await Promise.all(product.subSymbols.map(sub =>
-      httpGet(`${KLINE_4003}/history?symbol=${sub.kline}&resolution=${CONFIG.KLINE_RESOLUTION}&from=${from}&to=${now}`, 5000)
+      httpGet(`${KLINE_4003}/history?symbol=${sub.kline}&resolution=${CONFIG.KLINE_RESOLUTION}&from=${from}&to=${now}`, 30000)
         .then(d => ({ kline: sub.kline, t: d?.t || [], c: d?.c || [] }))
         .catch(() => ({ kline: sub.kline, t: [], c: [] }))
     ));
@@ -789,21 +789,21 @@ async function fetchProductKlines(product, fromTime) {
   // ── 普通产品 ──
   // 1G 指数组 → 4003
   if (product.group === 'index' && product.klineSymbol) {
-    const data = await httpGet(`${KLINE_4003}/history?symbol=${product.klineSymbol}&resolution=${CONFIG.KLINE_RESOLUTION}&from=${from}&to=${now}`, 5000);
+    const data = await httpGet(`${KLINE_4003}/history?symbol=${product.klineSymbol}&resolution=${CONFIG.KLINE_RESOLUTION}&from=${from}&to=${now}`, 30000);
     if (data && data.s === 'ok' && data.c) return { ok: true, closes: data.c, times: data.t };
     return { ok: false, detail: `${product.klineSymbol} 无数据` };
   }
 
   // 2G 商品组 → 4002
   if (product.group === 'commodity' && product.klineSymbol) {
-    const data = await httpGet(`${KLINE_4002}/history?symbol=${product.klineSymbol}&resolution=${CONFIG.KLINE_RESOLUTION}&from=${from}&to=${now}`, 5000);
+    const data = await httpGet(`${KLINE_4002}/history?symbol=${product.klineSymbol}&resolution=${CONFIG.KLINE_RESOLUTION}&from=${from}&to=${now}`, 30000);
     if (data && data.s === 'ok' && data.c) return { ok: true, closes: data.c, times: data.t };
     return { ok: false, detail: `${product.klineSymbol} 无数据` };
   }
 
   // 1G 股票组（单产品）→ 4003
   if (product.group === 'stock' && product.klineSymbol) {
-    const data = await httpGet(`${KLINE_4003}/history?symbol=${product.klineSymbol}&resolution=${CONFIG.KLINE_RESOLUTION}&from=${from}&to=${now}`, 5000);
+    const data = await httpGet(`${KLINE_4003}/history?symbol=${product.klineSymbol}&resolution=${CONFIG.KLINE_RESOLUTION}&from=${from}&to=${now}`, 30000);
     if (data && data.s === 'ok' && data.c) return { ok: true, closes: data.c, times: data.t };
     return { ok: false, detail: `${product.klineSymbol} 无数据` };
   }
@@ -821,45 +821,60 @@ async function fetchProductKlines(product, fromTime) {
  * 同 volume-surge-monitor 的数据源
 /**
  * D 条件检测
- * 通过 tools/apis.js 的 fetchVolumeRate() 读取 current.rate（5分钟量比）
- * current.rate > 1.2 → 放量成立
+ * 通过 tools/apis.js 的 fetchVolumeRate() 读取放量数据
+ * 放量条件: current.rate > 1.2 或 存在活跃放量段(segments.status=active)
  *
  * 特殊规则：指数组（index）默认没有量数据，跳过 D 条件
  */
-async function checkConditionD(product) {
+async function checkConditionD(product, atTime) {
   // 指数组不适用 D 条件
   if (product.group === 'index') {
     return { met: true, skip: true, detail: '指数组 — 跳过D条件' };
   }
 
   try {
-    const volMap = await a.fetchVolumeRate();
+    const volMap = await a.fetchVolumeRate(atTime);
 
     // 合成产品：任一子产品触发放量即算
     if (product.isSynthetic && product.subSymbols) {
       let bestRate = 0;
       let bestSym = null;
+      let bestSeg = false;
       for (const sub of product.subSymbols) {
         if (!sub.vol) continue;
-        const rate = volMap[sub.vol];
-        if (rate !== undefined && rate > bestRate) {
-          bestRate = rate;
+        const v = volMap[sub.vol];
+        if (!v) continue;
+        if (v.hasSegment && !bestSeg) {
+          bestSeg = true;
           bestSym = sub.vol;
+        }
+        if (v.rate != null && v.rate > bestRate) {
+          bestRate = v.rate;
+          if (!bestSym) bestSym = sub.vol;
         }
       }
       if (bestRate > 1.2) {
         return { met: true, detail: `放量(${bestRate.toFixed(2)}x via ${bestSym})` };
+      }
+      if (bestSeg) {
+        return { met: true, detail: `放量段(via ${bestSym})` };
       }
       return { met: false, detail: bestRate > 0 ? `量不足(${bestRate.toFixed(2)}x)` : '无放量数据' };
     }
 
     // 普通产品
     const volSym = product.volSymbol || product.symbol;
-    const rate = volMap[volSym];
-    if (rate !== undefined && rate > 1.2) {
-      return { met: true, detail: `放量(${rate.toFixed(2)}x)` };
+    const v = volMap[volSym];
+    if (v) {
+      if (v.rate != null && v.rate > 1.2) {
+        return { met: true, detail: `放量(${v.rate.toFixed(2)}x)` };
+      }
+      if (v.hasSegment) {
+        return { met: true, detail: '放量段(active)' };
+      }
+      return { met: false, detail: v.rate != null ? `量不足(${v.rate.toFixed(2)}x)` : '无放量数据' };
     }
-    return { met: false, detail: rate !== undefined ? `量不足(${rate.toFixed(2)}x)` : '无放量数据' };
+    return { met: false, detail: '无放量数据' };
   } catch {
     return { met: false, detail: '读取放量API失败' };
   }
@@ -877,8 +892,8 @@ const PREMIUM_API_MAP = { FX:'fx', METAL:'mtl', ENERGY:'oil', CRYPTO:'crypto', A
 /**
  * 查询 8285 global_sector 的 SPREAD_TREND
  */
-async function fetchGlobalSpreadTrend() {
-  const now = Date.now();
+async function fetchGlobalSpreadTrend(atTime) {
+  const now = atTime ? new Date(atTime).getTime() : Date.now();
   const s = encodeURIComponent(h.fmtHkt(now - 3600000));
   const e = encodeURIComponent(h.fmtHkt(now));
   const data = await httpGet(
@@ -895,11 +910,14 @@ async function fetchGlobalSpreadTrend() {
 /**
  * 查询 3336 全部 5 个 premium API，返回按品类 key 索引的 { stateIdx, state, ... }
  */
-async function fetchCommodityPremiums() {
+async function fetchCommodityPremiums(atTime) {
   const cats = ['fx','mtl','oil','crypto','agri'];
   const result = {};
   for (const cat of cats) {
-    const data = await httpGet(`http://localhost:3336/api/${cat}-premium`, 3000);
+    const url = atTime
+      ? `http://localhost:3336/api/${cat}-premium?at=${encodeURIComponent(atTime)}`
+      : `http://localhost:3336/api/${cat}-premium`;
+    const data = await httpGet(url, 3000);
     if (data?.available) {
       const key = cat === 'fx' ? 'FX' : cat === 'mtl' ? 'METAL' : cat === 'oil' ? 'ENERGY' : cat === 'crypto' ? 'CRYPTO' : 'AGRI';
       result[key] = data;
@@ -912,8 +930,8 @@ async function fetchCommodityPremiums() {
  * 获取活跃市场的 sector 折溢价数据
  * 返回 { marketCode: '扩大'|'稳定'|'缩小' }
  */
-async function fetchSectorSpreads(activeCodes) {
-  const spreadResults = await a.fetchSectorSpread(activeCodes, 2);
+async function fetchSectorSpreads(activeCodes, atTime) {
+  const spreadResults = await a.fetchSectorSpread(activeCodes, 2, atTime);
   const spreads = {};
   for (const entry of spreadResults) {
     Object.assign(spreads, entry.spreads);
@@ -990,7 +1008,7 @@ async function checkConditionC(product) {
  *     无C + A + B + D → 真转
  *   其余 → 无转折
  */
-async function checkProductTurnover(product, context = {}, fromTime) {
+async function checkProductTurnover(product, context = {}, fromTime, atTime) {
   const result = {
     symbol: product.symbol,
     group: product.group,
@@ -1005,7 +1023,7 @@ async function checkProductTurnover(product, context = {}, fromTime) {
   };
 
   // B 条件：价格形态
-  const klines = await fetchProductKlines(product, fromTime);
+  const klines = await fetchProductKlines(product, fromTime, atTime);
   result.klines = klines;
   if (klines.ok) {
     result.conditions.b = checkPricePattern(klines.closes);
@@ -1020,7 +1038,7 @@ async function checkProductTurnover(product, context = {}, fromTime) {
   result.conditions.c = await checkConditionC(product);
 
   // D 条件：放量（指数组跳过）
-  result.conditions.d = await checkConditionD(product);
+  result.conditions.d = await checkConditionD(product, atTime);
 
   const bMet = result.conditions.b.met;
   const aMet = result.conditions.a.met;
@@ -1078,7 +1096,9 @@ const STATE_FILE = path.join(__dirname, 'slow-turn-state.json');
  *     · 无转折记录 → 从 trendStartTime 到现在的 K线首尾比较
  *   - turnovers[]: 从趋势开始依次发生的转折记录
  */
-function createProductTracker() {
+function createProductTracker(atTime) {
+  // 回测模式用独立状态文件
+  const stateFile = atTime ? path.join(__dirname, 'slow-turn-state-backtest.json') : STATE_FILE;
   // 从 state-machine.json 读取趋势开始时间
   let trendStartTime = null;
   try {
@@ -1092,24 +1112,25 @@ function createProductTracker() {
   // 加载持久化状态
   let saved = null;
   try {
-    saved = JSON.parse(fs.readFileSync(STATE_FILE, 'utf-8'));
+    saved = JSON.parse(fs.readFileSync(stateFile, 'utf-8'));
   } catch {}
 
   // 趋势切换检测：trendStartTime 变了 → 清空重新开始
   if (saved && saved.trendStartTime === trendStartTime) {
-    return { trendStartTime, products: saved.products || {} };
+    return { trendStartTime, products: saved.products || {}, _stateFile: stateFile };
   }
 
   // 新趋势或首次运行
-  return { trendStartTime, products: {} };
+  return { trendStartTime, products: {}, _stateFile: stateFile };
 }
 
 /**
  * 保存跟踪器状态到文件
  */
 function saveProductTracker(tracker) {
+  const stateFile = tracker._stateFile || STATE_FILE;
   try {
-    fs.writeFileSync(STATE_FILE, JSON.stringify({
+    fs.writeFileSync(stateFile, JSON.stringify({
       trendStartTime: tracker.trendStartTime,
       products: tracker.products,
     }, null, 2));
@@ -1133,11 +1154,11 @@ function getOrCreateProductState(tracker, product) {
   return tracker.products[product.symbol];
 }
 
-function recordTurnover(state, direction, pattern, isFake, baselinePrice) {
+function recordTurnover(state, direction, pattern, isFake, baselinePrice, atTime) {
   // 方向没变不重复推入
   if (state.currentDirection === direction) return;
   state.turnovers.push({
-    time: new Date().toISOString(),
+    time: atTime ? new Date(atTime).toISOString() : new Date().toISOString(),
     direction,
     pattern,
     isFake,
@@ -1189,7 +1210,7 @@ function linearRegressionSlope(closes) {
  * @param {number[]} closes - 从转折时间到现在的K线收盘价
  * @returns {{ rolledBack: boolean, detail: string }}
  */
-function checkRollback(state, closes) {
+function checkRollback(state, closes, atTime) {
   // 取最后一条未被回滚的转折记录
   const lastTurn = (state.turnovers || []).filter(t => !t.rolledBack).pop();
   if (!lastTurn) return { rolledBack: false, detail: '无转折记录' };
@@ -1205,7 +1226,7 @@ function checkRollback(state, closes) {
   if (lastTurn.direction === 'up' && slope < -threshold) {
     // 回滚：标记该转折为已回滚
     lastTurn.rolledBack = true;
-    lastTurn.rollbackAt = new Date().toISOString();
+    lastTurn.rollbackAt = atTime ? new Date(atTime).toISOString() : new Date().toISOString();
     lastTurn.rollbackSlope = slope;
     // 方向回滚到前一个有效转折的方向
     const prevTurn = (state.turnovers || []).filter(t => !t.rolledBack).pop();
@@ -1216,7 +1237,7 @@ function checkRollback(state, closes) {
   // 转空(down)：斜率 > +阈值 → 持续上升 → 回滚
   if (lastTurn.direction === 'down' && slope > threshold) {
     lastTurn.rolledBack = true;
-    lastTurn.rollbackAt = new Date().toISOString();
+    lastTurn.rollbackAt = atTime ? new Date(atTime).toISOString() : new Date().toISOString();
     lastTurn.rollbackSlope = slope;
     const prevTurn = (state.turnovers || []).filter(t => !t.rolledBack).pop();
     state.currentDirection = prevTurn ? prevTurn.direction : null;
@@ -1246,8 +1267,12 @@ function checkRollback(state, closes) {
  *   LT = 上涨中转折 = 5 板块全部转空
  *   ST = 下跌中转折 = 5 板块全部转多
  */
-function aggregateSectorTurnover(tracker, sector) {
+function aggregateSectorTurnover(tracker, sector, atTime) {
   const result = { sector, direction: null, confirmed: false, g1: null, g2: null, detail: '' };
+
+  // 1G 范围：当前开盘市场的股票产品 + 指数产品（永远包含）
+  // 2G 范围：全部商品产品（期货，近24h交易）
+  const { markets: activeMarkets } = h.getActiveMarkets(atTime);
 
   // ── 收集产品状态 ──
   // 每个产品提供：direction（目前方向，始终有值）+ hasTurn（是否有转折记录）
@@ -1255,9 +1280,17 @@ function aggregateSectorTurnover(tracker, sector) {
   const g2Products = [];
 
   for (const state of Object.values(tracker.products)) {
-    if (state.group === 'stock' || state.group === 'index') {
-      // 1G: 股票和指数按 sector 过滤
+    if (state.group === 'index') {
+      // 指数永远包含
       if (state.sector !== sector) continue;
+      g1Products.push({
+        direction: state.currentDirection || null,
+        hasTurn: (state.turnovers || []).filter(t => !t.rolledBack).length > 0,
+      });
+    } else if (state.group === 'stock') {
+      // 股票只算当前在盘市场
+      if (state.sector !== sector) continue;
+      if (!activeMarkets.includes(state.market)) continue;
       g1Products.push({
         direction: state.currentDirection || null,
         hasTurn: (state.turnovers || []).filter(t => !t.rolledBack).length > 0,
@@ -1354,6 +1387,8 @@ function judgeGroupTurnover(products) {
 async function main(options = {}) {
   const atStr = options.at || null;
   const jsonMode = options.json || false;
+  const backtestId = options.backtestId || null;
+  const saveDb = options.saveDb || false;
   const log = jsonMode ? () => {} : console.log;
 
   const result = {
@@ -1376,7 +1411,7 @@ async function main(options = {}) {
 ╚══════════════════════════════════════════╝`);
 
   // ── Step 1: 获取所有产品 ──
-  const stockProducts = getStockProducts();
+  const stockProducts = getStockProducts(atStr);
   const indexProducts = getIndexProducts();
   const commodityProducts = getCommodityProducts();
 
@@ -1390,7 +1425,7 @@ async function main(options = {}) {
   log(`  商品组:  ${commodityProducts.length} 个`);
 
   // ── Step 2: 创建产品跟踪器 ──
-  const tracker = createProductTracker();
+  const tracker = createProductTracker(atStr);
   result.trendStartTime = tracker.trendStartTime;
   const allProducts = [...stockProducts, ...indexProducts, ...commodityProducts];
 
@@ -1400,9 +1435,9 @@ async function main(options = {}) {
   log(`  股票组 sector 市场: ${activeCodes.join(', ')}`);
 
   const [sectorSpreads, globalSpreadTrend, commodityPremiums] = await Promise.all([
-    fetchSectorSpreads(activeCodes),
-    fetchGlobalSpreadTrend(),
-    fetchCommodityPremiums(),
+    fetchSectorSpreads(activeCodes, atStr),
+    fetchGlobalSpreadTrend(atStr),
+    fetchCommodityPremiums(atStr),
   ]);
 
   log(`  股票组 SPREAD_TREND: ${Object.entries(sectorSpreads).map(([k, v]) => `${k}=${v}`).join(', ')}`);
@@ -1431,11 +1466,11 @@ async function main(options = {}) {
       ? Math.floor(new Date(lastTurn.time).getTime() / 1000)
       : (tracker.trendStartTime ? Math.floor(new Date(tracker.trendStartTime).getTime() / 1000) : null);
 
-    const turnoverResult = await checkProductTurnover(product, contextData, windowStart);
+    const turnoverResult = await checkProductTurnover(product, contextData, windowStart, atStr);
 
     // 先检测回滚（用新窗口的K线）
     if (lastTurn && turnoverResult.klines && turnoverResult.klines.ok) {
-      const rollback = checkRollback(state, turnoverResult.klines.closes);
+      const rollback = checkRollback(state, turnoverResult.klines.closes, atStr);
       if (rollback.rolledBack) {
         log(`  ${rollback.detail} — ${product.symbol} 删除转折(${lastTurn.direction}), 方向回滚为 ${state.currentDirection || 'null'}`);
         // 回滚后重新获取方向（可能后续还会检测到新转折）
@@ -1449,7 +1484,7 @@ async function main(options = {}) {
       const baselinePrice = turnoverResult.klines?.closes
         ? turnoverResult.klines.closes[turnoverResult.klines.closes.length - 1]
         : null;
-      recordTurnover(state, turnoverResult.direction, turnoverResult.conditions.b?.pattern, turnoverResult.isFake, baselinePrice);
+      recordTurnover(state, turnoverResult.direction, turnoverResult.conditions.b?.pattern, turnoverResult.isFake, baselinePrice, atStr);
       log(`  🚨 ${product.symbol}: ${turnoverResult.detail}`);
     } else {
       // 无转折 → 用K线首尾比较算当前方向（仅当没有转折记录时）
@@ -1482,7 +1517,7 @@ async function main(options = {}) {
   // ── Step 5: 按板块聚合 ──
   log(`\n📊 板块聚合:`);
   for (const sector of ALL_SECTORS) {
-    const sr = aggregateSectorTurnover(tracker, sector);
+    const sr = aggregateSectorTurnover(tracker, sector, atStr);
     result.sectorResults.push(sr);
     log(`  ${sector}: ${sr.detail}`);
   }
@@ -1589,15 +1624,62 @@ async function main(options = {}) {
   detailLines.push('');
   try { fs.appendFileSync(detailLog, detailLines.join('\n') + '\n'); } catch {}
 
+  // ── 写入 DB（实时或回测） ──
+  if (saveDb) {
+    try {
+      const Database = require(path.join(__dirname, 'node_modules', 'better-sqlite3'));
+      const dbPath = path.join(__dirname, 'sentinel-v2.db');
+      const db = new Database(dbPath);
+      const crypto = require('crypto');
+      const id = crypto.randomUUID();
+      const ts = atStr || new Date().toISOString();
+      db.prepare(`INSERT INTO sentinel_executions
+        (id, sentinel_type, source, backtest_id, timestamp, triggered, summary, result_json, signal, sources)
+        VALUES (?, 'slow', ?, ?, ?, ?, ?, ?, ?, ?)`
+      ).run(
+        id,
+        backtestId ? 'backtest' : 'cli',
+        backtestId,
+        ts,
+        result.signal !== 'NONE' ? 1 : 0,
+        result.summary || '',
+        JSON.stringify(result),
+        result.signal || 'NONE',
+        result.sources || ''
+      );
+      db.close();
+      log(`\n💾 DB 写入: id=${id.slice(0,8)}, timestamp=${ts}, backtest_id=${backtestId || 'null'}`);
+    } catch (e) {
+      log(`\n⚠️ DB 写入失败: ${e.message}`);
+    }
+  }
+
   return result;
 }
 
 // ── CLI ──
 if (require.main === module) {
   const args = process.argv.slice(2);
-  const atI = args.indexOf('--at');
-  const atStr = atI >= 0 ? args[atI + 1] : null;
-  main({ at: atStr, json: args.includes('--json') }).then(r => {
+  // 支持 --at VALUE 和 --at=VALUE 两种形式
+  let atStr = null;
+  const atEq = args.find(a => a.startsWith('--at='));
+  if (atEq) {
+    atStr = atEq.slice(5);
+  } else {
+    const atI = args.indexOf('--at');
+    if (atI >= 0) atStr = args[atI + 1];
+  }
+  // --backtest-id=VALUE 或 --backtest-id VALUE
+  let backtestId = null;
+  const btEq = args.find(a => a.startsWith('--backtest-id='));
+  if (btEq) {
+    backtestId = btEq.slice(14);
+  } else {
+    const btI = args.indexOf('--backtest-id');
+    if (btI >= 0) backtestId = args[btI + 1];
+  }
+  const saveDb = args.includes('--save-db');
+  main({ at: atStr, json: args.includes('--json'), backtestId, saveDb }).then(r => {
     if (args.includes('--json')) console.log(JSON.stringify(r));
   }).catch(e => console.error(e.message));
 }

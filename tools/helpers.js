@@ -63,8 +63,8 @@ function fmtHkt(ts) {
 
 // ── 開盤市場 ──
 
-function getActiveSessions() {
-  const now = new Date();
+function getActiveSessions(atTime) {
+  const now = atTime ? new Date(atTime) : new Date();
   return MARKET_HOURS.filter(m => {
     const t = now.toLocaleTimeString('en-US', {
       timeZone: m.tz, hour12: false, hour: '2-digit', minute: '2-digit'
@@ -77,8 +77,8 @@ function getActiveSessions() {
   }).map(m => m.code);
 }
 
-function getActiveMarkets() {
-  const codes = getActiveSessions();
+function getActiveMarkets(atTime) {
+  const codes = getActiveSessions(atTime);
   const SESSION_GROUPS = {
     '亞洲時段 (AU)':   ['AU'],
     '亞洲時段 (ASIA)': ['JP','KR','CN','HK','SG'],  // ⏸ TW 暂时去掉
